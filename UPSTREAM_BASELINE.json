@@ -7,7 +7,9 @@
   "source_archive": "astrbot_plugin_memory_companion-2.6.5-weixin-r2-plugin-only.zip",
   "source_archive_sha256": "15372f5605e353f3df948f3a246392a4a8ca20ccd01e1e33719ab1423876b000",
   "source_snapshot_commit": "f98e583ccc5e63d7c41d5e4dd4f6774a21decbb3",
-  "merge_strategy": "three-way-snapshot-merge",
+  "merge_strategy": "git-merge-with-shared-upstream-baseline",
   "automatic_upstream_merge": false,
-  "real_wechat_verification": "requires user environment"
+  "real_wechat_verification": "requires user environment",
+  "upstream_history_bridge_commit": "debfdfe3cb8d7ac61eb1b7faf06215a87a2560ae",
+  "upstream_git_history_connected": true
 }
