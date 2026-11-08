@@ -1,0 +1,4474 @@
+/* ============================================================
+   记忆面板 · 我会牢牢记住你 · UI v2
+   核心层：API / 状态 / 路由 / 主题 / 骨架
+   ============================================================ */
+"use strict";
+
+// Keep the fallback on AstrBot's authenticated extension API.  The legacy
+// /api/plug route is available across dashboard versions and does not depend
+// on a dashboard cookie inside mobile WebViews; the page bridge remains the
+// preferred transport when the page is embedded by AstrBot.
+const API = "/api/plug/astrbot_plugin_memory_companion/page";
+const PAGE_ENDPOINT_PREFIX = "page";
+const TRANSPARENT_IMAGE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+const THEME_KEY = "memory_companion_theme";
+const NAV_KEY = "memory_companion_nav";
+const MODE_KEY = "memory_companion_mode";
+const PALETTE_KEY = "memory_companion_palette";
+
+/* ------------------------------------------------------------
+   基础工具
+   ------------------------------------------------------------ */
+const $ = (sel, root) => (root || document).querySelector(sel);
+const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+function esc(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function compact(value, fallback) {
+  const text = String(value ?? "").trim();
+  return text || (fallback === undefined ? "" : fallback);
+}
+
+function num(value, digits) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "-";
+  const fixed = digits === undefined ? parsed.toFixed(2) : parsed.toFixed(digits);
+  return fixed.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+}
+
+function int(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : 0;
+}
+
+function fmtInt(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "-";
+  return Math.round(parsed).toLocaleString("zh-CN");
+}
+
+function fmtTime(value) {
+  const text = compact(value);
+  if (!text) return "-";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleString("zh-CN", {
+    year: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function fmtDate(value) {
+  const text = compact(value);
+  if (!text) return "-";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
+function shortId(value) {
+  const text = compact(value);
+  if (!text) return "-";
+  if (text.length <= 16) return text;
+  return text.slice(0, 8) + "…" + text.slice(-4);
+}
+
+function clip(value, max) {
+  const text = compact(value);
+  if (!text) return "-";
+  return text.length > max ? text.slice(0, max).trimEnd() + "…" : text;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function arraysEqual(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
+}
+
+/* ------------------------------------------------------------
+   图标
+   ------------------------------------------------------------ */
+const ICON_PATHS = {
+  gauge: '<circle cx="8" cy="8" r="6"/><path d="M8 5.4v2.9l2 1.2"/>',
+  library: '<path d="M3 3.4h3.4v11H3z"/><path d="M8 3.4h3v11H8z"/><path d="M11.6 4.6l2.8-.7v8.5l-2.8.7z"/>',
+  spark: '<path d="M8 1.8l1.6 4.1 4.1 1.6-4.1 1.6L8 13.2 6.4 9.1 2.3 7.5l4.1-1.6z"/><path d="M13.2 2.2v2.2M14.3 3.3h-2.2"/>',
+  link: '<path d="M6.6 9.4l2.8-2.8"/><path d="M9.2 4.4l1.1-1.1a2.6 2.6 0 013.7 3.7l-1.1 1.1"/><path d="M6.8 11.6l-1.1 1.1a2.6 2.6 0 01-3.7-3.7l1.1-1.1"/>',
+  download: '<path d="M8 2.4v7.2"/><path d="M4.9 6.7L8 9.8l3.1-3.1"/><path d="M2.6 12.2h10.8"/>',
+  sliders: '<path d="M3 4.6h10M3 8h10M3 11.4h10"/><circle cx="6.2" cy="4.6" r="1.5"/><circle cx="10.4" cy="8" r="1.5"/><circle cx="5.4" cy="11.4" r="1.5"/>',
+  chat: '<path d="M13.4 8.4c0 2.5-2.4 4.5-5.4 4.5-.7 0-1.4-.1-2-.3L2.6 13.6l.9-2.3A4.3 4.3 0 012.6 8.4c0-2.5 2.4-4.5 5.4-4.5s5.4 2 5.4 4.5z"/>',
+  users: '<circle cx="6" cy="5.6" r="2.2"/><path d="M2.2 13.2c.3-2 1.9-3.2 3.8-3.2s3.5 1.2 3.8 3.2"/><path d="M11 3.6a2.2 2.2 0 010 4.2M12 10.4c1.5.3 2.5 1.4 2.7 2.8"/>',
+  user: '<circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4c.5-2.2 2.4-3.5 4.8-3.5s4.3 1.3 4.8 3.5"/>',
+  sun: '<circle cx="8" cy="8" r="2.8"/><path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1"/>',
+  camera: '<path d="M2.4 5.6h2.2l1-1.6h4.8l1 1.6h2.2v7.2H2.4z"/><circle cx="8" cy="9" r="2.2"/>',
+  star: '<path d="M8 2.2l1.8 3.9 4.2.5-3.1 2.9.8 4.2L8 11.6l-3.7 2.1.8-4.2L2 6.6l4.2-.5z"/>',
+  scope: '<circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.4"/><path d="M8 1.4v2M8 12.6v2M1.4 8h2M12.6 8h2"/>',
+  shield: '<path d="M8 2.2l4.6 1.8v4c0 3-1.9 5-4.6 5.8C5.3 12.9 3.4 11 3.4 8v-4z"/><path d="M6.1 8l1.4 1.4 2.6-2.8"/>',
+  plug: '<path d="M6 2.4v3.2M10 2.4v3.2"/><path d="M4 5.6h8v2.2a4 4 0 01-8 0z"/><path d="M8 11.8v1.8"/>',
+  box: '<path d="M2.6 5.4L8 2.6l5.4 2.8v5.2L8 13.4 2.6 10.6z"/><path d="M2.6 5.4L8 8.2l5.4-2.8M8 8.2v5.2"/>',
+  heart: '<path d="M8 13.2S2.6 10 2.6 6.2A2.9 2.9 0 018 4.9a2.9 2.9 0 015.4 1.3c0 3.8-5.4 7-5.4 7z"/>',
+  clock: '<circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.4 1.5"/>',
+  tag: '<path d="M8.6 2.6H13v4.4l-6 6-4.4-4.4z"/><circle cx="10.4" cy="5.2" r="0.9"/>',
+  db: '<ellipse cx="8" cy="4.2" rx="5" ry="2"/><path d="M3 4.2v7.6c0 1.1 2.2 2 5 2s5-.9 5-2V4.2"/><path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>',
+};
+
+function icon(name, cls) {
+  const path = ICON_PATHS[name] || ICON_PATHS.box;
+  return (
+    '<span class="' + (cls || "nav-icon") + '" aria-hidden="true">' +
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' + path + "</svg></span>"
+  );
+}
+
+/* ------------------------------------------------------------
+   API 层
+   ------------------------------------------------------------ */
+function getBridge() {
+  if (window.AstrBotPluginPage) return window.AstrBotPluginPage;
+  try {
+    if (window.parent && window.parent !== window && window.parent.AstrBotPluginPage) {
+      return window.parent.AstrBotPluginPage;
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+function canUseHttpFallback() {
+  return ["http:", "https:"].includes(window.location.protocol) && typeof window.fetch === "function";
+}
+
+async function waitForBridge() {
+  for (let i = 0; i < 24; i += 1) {
+    const bridge = getBridge();
+    if (bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function") return bridge;
+    await sleep(80);
+  }
+  return null;
+}
+
+async function apiGet(path) {
+  return apiRequest(path, { method: "GET" });
+}
+
+async function apiPost(path, payload) {
+  return apiRequest(path, { method: "POST", body: payload || {} });
+}
+
+async function apiRequest(path, options) {
+  const method = (options.method || "GET").toUpperCase();
+  // 2.6.0：危险动作的确认口令与写操作的 CSRF 令牌统一在这里补齐，调用点保持原样。
+  if (method !== "GET") {
+    options.body = await withCsrfToken(options.body);
+    options.body = await withConfirmation(path, options.body);
+  }
+  const httpAvailable = canUseHttpFallback();
+  const bridge = getBridge() || await waitForBridge();
+  let data;
+  if (bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function") {
+    data = await bridgeRequest(bridge, path, method, options.body);
+  } else if (httpAvailable) {
+    data = await httpRequest(path, method, options.body);
+  } else {
+    throw new Error("未检测到 AstrBot 页面桥接，且当前页面不能使用同源 Web API");
+  }
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch (error) {
+      throw new Error(data);
+    }
+  }
+  if (data && data.status === "error") {
+    throw new Error(data.message || data.error || "请求失败");
+  }
+  if (!data || data.success === false) throw new Error(data && data.error ? data.error : "请求失败");
+  return guardPayload(data.data !== undefined ? data.data : data, path);
+}
+
+// 与后端 _wrap_route 的确认口径一一对应：
+// 删除类 DELETE:<id>、清空类 CLEAR:<scope>、擦人类 ERASE:<user_id>、
+// 其余危险路由 CONFIRM:<route>。只有危险路由才注入，普通写入不受影响。
+const CONFIRMATION_ROUTES = new Set([
+  "/memory/delete",
+  "/core-memory/delete",
+  "/person/erase",
+  "/person/weight",
+  "/portrait/govern",
+  "/maintenance/audit/apply",
+  "/maintenance/audit/rollback",
+  "/data/import/run",
+  "/conversation-import/rollback",
+  "/maintenance/clear_all",
+  "/maintenance/clear_scope",
+  "/import/livingmemory/run",
+  "/config/module/update",
+]);
+
+function canonicalConfirmation(route, payload) {
+  if (route === "/memory/delete" || route === "/core-memory/delete") {
+    return "DELETE:" + (payload.id || "");
+  }
+  if (route === "/person/erase") {
+    return "ERASE:" + (payload.user_id || "");
+  }
+  if (route === "/maintenance/clear_all") {
+    return "CLEAR:all";
+  }
+  if (route === "/maintenance/clear_scope") {
+    return "CLEAR:" + (payload.target_type || payload.type || payload.scope || "");
+  }
+  return "CONFIRM:" + route;
+}
+
+// P13：写操作要带 CSRF 令牌。令牌由 GET /ui/csrf 下发（15 分钟有效）；
+// 桥接通道无法自定义请求头，所以统一放进 body.csrf_token，服务端两种都收。
+let csrfTokenCache = { token: "", expiresAt: 0 };
+
+function payloadOf(data) {
+  return data && data.data !== undefined ? data.data : data;
+}
+
+// 不经过 apiRequest 的底层请求：取令牌/取 nonce 时不能再次触发注入逻辑。
+async function rawApiRequest(path, method, body) {
+  const bridge = getBridge() || await waitForBridge();
+  if (bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function") {
+    return bridgeRequest(bridge, path, method, body);
+  }
+  if (canUseHttpFallback()) return httpRequest(path, method, body);
+  return null;
+}
+
+async function ensureCsrfToken(force) {
+  const now = Date.now();
+  if (!force && csrfTokenCache.token && csrfTokenCache.expiresAt > now + 5000) {
+    return csrfTokenCache.token;
+  }
+  let data = null;
+  try {
+    data = await rawApiRequest("/ui/csrf", "GET", null);
+  } catch (error) {
+    return "";
+  }
+  const body = payloadOf(data);
+  const token = body && typeof body.token === "string" ? body.token : "";
+  if (!token) return "";
+  const ttl = Number(body.expires_in) > 0 ? Number(body.expires_in) : 900;
+  csrfTokenCache = { token: token, expiresAt: now + ttl * 1000 };
+  return token;
+}
+
+async function withCsrfToken(body) {
+  const payload = Object.assign({}, body || {});
+  const token = await ensureCsrfToken(false);
+  if (token) payload.csrf_token = token;
+  return payload;
+}
+
+async function requestConfirmationNonce(route, payload) {
+  let data = null;
+  try {
+    const token = await ensureCsrfToken(false);
+    const requestBody = { route: route, payload: payload || {} };
+    if (token) requestBody.csrf_token = token;
+    data = await rawApiRequest("/ui/confirm-nonce", "POST", requestBody);
+  } catch (error) {
+    return "";
+  }
+  const body = payloadOf(data);
+  return body && typeof body.confirm === "string" ? body.confirm : "";
+}
+
+// P9：确认串改为一次性 nonce——先向服务端要 "<canonical>:<nonce>"，取不到时
+// 回退到固定串（非浏览器上下文仍然接受，便于本地脚本与排查）。
+async function withConfirmation(path, body) {
+  const route = String(path || "").split("?")[0];
+  if (!CONFIRMATION_ROUTES.has(route)) return body;
+  const payload = Object.assign({}, body || {});
+  const canonical = canonicalConfirmation(route, payload);
+  const nonce = await requestConfirmationNonce(route, payload);
+  payload.confirm = nonce || canonical;
+  return payload;
+}
+
+async function bridgeRequest(bridge, path, method, body) {
+  const url = new URL(String(path || ""), "https://astrbot-plugin-page.local/");
+  const endpoint = (PAGE_ENDPOINT_PREFIX + "/" + url.pathname.replace(/^\/+/, ""))
+    .replace(/\/{2,}/g, "/");
+  if (method === "GET") {
+    const params = Object.fromEntries(url.searchParams.entries());
+    return bridge.apiGet(endpoint, Object.keys(params).length ? params : undefined);
+  }
+  return bridge.apiPost(endpoint, body || {});
+}
+
+async function httpRequest(path, method, body) {
+  const response = await fetch(API + path, {
+    method,
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (error) {
+    if (!response.ok) throw new Error("请求失败（HTTP " + response.status + "）");
+    throw new Error("页面 API 返回了无效 JSON");
+  }
+  if (!response.ok || (data && data.success === false)) {
+    const error = new Error((data && data.error) || "请求失败（HTTP " + response.status + "）");
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+async function apiTry(fn, fallback) {
+  try {
+    return await fn();
+  } catch (error) {
+    return fallback;
+  }
+}
+
+/* ------------------------------------------------------------
+   字段护栏（只检测，不阻止）
+   开发模式下用 Proxy 包装 apiRequest 的返回值，读取响应里不存在的字段时
+   console.error 并上报，把「静默显示错误值」变成「可见错误」。开启方式：
+   window.__MC_FIELD_GUARD__ = true。它不阻止错误发生；编译期强制需要
+   JSDoc + tsc --checkJs 或迁移 TypeScript，成本远超收益，明确不做。
+   ------------------------------------------------------------ */
+const guardedFieldReads = new Set();
+
+function guardPayload(payload, path) {
+  if (typeof window === "undefined" || window.__MC_FIELD_GUARD__ !== true) return payload;
+  if (payload === null || typeof payload !== "object") return payload;
+  const endpoint = String(path || "").split("?")[0];
+  return new Proxy(payload, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && !(key in target)) {
+        const marker = endpoint + " · " + key;
+        if (!guardedFieldReads.has(marker)) {
+          guardedFieldReads.add(marker);
+          console.error(
+            "[记忆面板] 读取了响应中不存在的字段：" + marker +
+            "；字段归属以 page_api.ENDPOINT_FIELD_CONTRACT 为准。"
+          );
+          if (typeof window.__MC_FIELD_REPORT__ === "function") window.__MC_FIELD_REPORT__(marker);
+        }
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
+
+/* ------------------------------------------------------------
+   陪伴插件联动状态的唯一取数入口
+   每个字段只从声明了它的端点读取，视图不再直接摸 caps.* / personal.*：
+     installed        ← /capabilities/bot-personal · companion_installed
+     pluginName       ← /companion/personal-memory · plugin_name
+     dailyPlanEnabled ← /companion/personal-memory · daily_plan_enabled
+     detailEnabled    ← /companion/personal-memory · detail_enabled
+     reason           ← /companion/personal-memory · reason / bridge_reason
+
+   **installed 不能读 caps.available。** 那个字段的含义是「记忆侧自己的 contract
+   自检通过」，也就是「我准备好了、可以跟陪伴侧对话」，跟对方装没装毫无关系，
+   它恒为 true。过去面板拿它当「已安装」显示，于是根本没装
+   astrbot_plugin_private_companion 的宿主上也显示「已连接」。
+   installed 只认 companion_installed —— 那个字段由后端真的去 import 陪伴插件的
+   运行时入口 get_private_companion_api() 得到，答的是「现在真的能用」。
+   ------------------------------------------------------------ */
+const REASON_TEXT = {
+  bridge_status_unavailable: "联动状态读取失败",
+  bridge_config_unavailable: "无法读取插件配置",
+  bridge_config_unreadable: "配置读取出错",
+  bridge_config_invalid: "配置格式不正确",
+  bridge_disabled: "联动已在配置中关闭",
+  companion_api_unavailable: "未检测到陪伴插件 astrbot_plugin_private_companion",
+  companion_p6_producer_unavailable: "陪伴插件未提供状态接口",
+  companion_p6_producer_unreadable: "陪伴插件状态接口读取失败",
+  companion_p6_producer_stale: "陪伴插件状态已过期",
+  companion_p6_unverifiable: "陪伴插件状态无法核实",
+  companion_bridge_available: "联动正常",
+  manifest_registry_unavailable: "扩展清单不可用",
+  coordination_input_unverifiable: "部分联动项无法核实",
+  coordination_degraded: "部分联动项降级",
+  coordination_ready: "联动正常",
+  runtime_compatible: "契约完全兼容",
+  runtime_degraded: "契约降级运行",
+  runtime_unsupported: "契约版本不受支持",
+  runtime_status_unavailable: "运行时状态不可读",
+};
+
+/* 内部原因码是给日志看的，直接甩到面板上等于让用户猜。认不出来的码原样返回，
+   宁可难看也不能吞掉——那说明后端又加了新码。 */
+function bridgeReasonText(code) {
+  const key = compact(code);
+  if (!key) return "";
+  return REASON_TEXT[key] || key;
+}
+
+const HEALTH_TEXT = { ready: "正常", degraded: "降级", unverifiable: "无法核实" };
+
+/* health 同样是内部词（ready/degraded/unverifiable），直接显示等于让用户查字典。
+   原始码仍保留在联动的 title 里，排查时看得到。 */
+function healthText(value) {
+  const key = compact(value);
+  return HEALTH_TEXT[key] || key || "未知";
+}
+
+function bridgeHealthText(bridge) {
+  if (!bridge || typeof bridge !== "object") return "未知";
+  return healthText(bridge.health);
+}
+
+function runtimeHealthText(runtime) {
+  if (!runtime || typeof runtime !== "object") return "未知";
+  const reason = bridgeReasonText(runtime.reason_code);
+  return reason ? healthText(runtime.health) + " · " + reason : healthText(runtime.health);
+}
+
+function companionStatus(capsPayload, personalPayload) {
+  const caps = capsPayload && typeof capsPayload === "object" ? capsPayload : {};
+  const personal = personalPayload && typeof personalPayload === "object" ? personalPayload : {};
+  const installed = caps.companion_installed === true;
+  const linked = personal.available === true;
+  return {
+    installed: installed,
+    available: installed && linked,
+    pluginName: compact(personal.plugin_name) || (installed ? compact(caps.companion_plugin_name) : ""),
+    dailyPlanEnabled: installed && linked && personal.daily_plan_enabled === true,
+    detailEnabled: installed && linked && personal.detail_enabled === true,
+    reason: !installed
+      ? "未安装陪伴插件 astrbot_plugin_private_companion"
+      : compact(personal.reason) || bridgeReasonText(personal.bridge_reason) || (linked ? "" : "陪伴插件已安装，桥接尚未就绪"),
+  };
+}
+
+/* ------------------------------------------------------------
+   全局状态
+   ------------------------------------------------------------ */
+const state = {
+  view: "overview",
+  group: "overview",
+  theme: document.documentElement.dataset.theme || "dark",
+  mode: document.documentElement.dataset.initialMode === "cinema" ? "cinema" : "standard",
+  ready: false,
+  stats: null,
+  buckets: [],
+  filters: { scope: "", q: "", visibility: "", lifecycle: "", memoryType: "", ownerBot: "" },
+  selected: null,
+  configSchema: null,
+  configModule: "appearance",
+  companion: null,
+  acl: null,
+  assemblyViewer: null,
+};
+
+/* ------------------------------------------------------------
+   提示 / 忙碌 / 抽屉
+   ------------------------------------------------------------ */
+let toastTimer = 0;
+let assemblyViewerTicket = 0;
+
+function toast(message, tone) {
+  const node = $("#toast");
+  if (!node) return;
+  node.textContent = message;
+  node.dataset.tone = tone || "";
+  node.classList.add("is-on");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => node.classList.remove("is-on"), 2600);
+}
+
+let busyCount = 0;
+
+function busy(on, text) {
+  busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+  const layer = $("#busyLayer");
+  if (!layer) return;
+  if (text) $("#busyText").textContent = text;
+  layer.classList.toggle("is-on", busyCount > 0);
+}
+
+async function withBusy(text, fn, minMs) {
+  busy(true, text);
+  const startedAt = Date.now();
+  try {
+    return await fn();
+  } finally {
+    const remaining = (Number(minMs) || 0) - (Date.now() - startedAt);
+    if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+    busy(false);
+  }
+}
+
+function setBusyText(text) {
+  const el = $("#busyText");
+  if (el && text) el.textContent = text;
+}
+
+function openDrawer(title, eyebrow, html) {
+  $("#drawerEyebrow").textContent = eyebrow || "记忆";
+  $("#drawerTitle").textContent = title || "未选择";
+  $("#drawerBody").innerHTML = html;
+  $("#drawer").classList.add("is-open");
+  $("#drawer").setAttribute("aria-hidden", "false");
+  $("#scrim").hidden = false;
+}
+
+function closeDrawer() {
+  $("#drawer").classList.remove("is-open");
+  $("#drawer").setAttribute("aria-hidden", "true");
+  $("#scrim").hidden = true;
+}
+
+function showInlineConfirmation(title, message, confirmLabel) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "inline-confirm-overlay";
+    overlay.innerHTML =
+      '<section class="inline-confirm" role="dialog" aria-modal="true" aria-labelledby="inlineConfirmTitle">' +
+      '<h2 id="inlineConfirmTitle">' + esc(title || "请确认") + "</h2>" +
+      '<p>' + esc(message || "确认继续此操作？") + "</p>" +
+      '<div class="inline-confirm-actions"><button type="button" data-confirm-cancel>取消</button><button type="button" class="is-danger" data-confirm-ok>' +
+      esc(confirmLabel || "继续") + "</button></div></section>";
+    const finish = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay || event.target.closest("[data-confirm-cancel]")) finish(false);
+      if (event.target.closest("[data-confirm-ok]")) finish(true);
+    });
+    document.body.appendChild(overlay);
+    const ok = $("[data-confirm-ok]", overlay);
+    if (ok) ok.focus();
+  });
+}
+
+/* ------------------------------------------------------------
+   主题
+   ------------------------------------------------------------ */
+/* appearance.theme 过去是纯死配置：后端把 14 个中国传统色名映射成 key 传给前端，
+   前端谁都没读，配了也不变色。这里把 key 打到 <html> 上，由 app.css 的
+   [data-palette="…"] 规则接管。index.html 在跳转前也会打一次，避免首帧闪色。 */
+const PALETTE_KEYS = new Set([
+  "huangbaiyou", "tianpiao", "haitianxia", "yingying", "oubi", "qingming",
+  "zipu", "shanlan", "qielan", "tuihong", "congqing", "yuebai", "mocan", "gupiao",
+]);
+
+function applyPalette(key) {
+  const value = compact(key).toLowerCase();
+  if (PALETTE_KEYS.has(value)) {
+    document.documentElement.dataset.palette = value;
+    try { window.localStorage.setItem(PALETTE_KEY, value); } catch (error) { /* 忽略存储禁用 */ }
+    return value;
+  }
+  delete document.documentElement.dataset.palette;
+  try { window.localStorage.removeItem(PALETTE_KEY); } catch (error) { /* 忽略存储禁用 */ }
+  return "";
+}
+
+async function syncPalette() {
+  const payload = await apiTry(() => apiGet("/ui-preferences"), null);
+  if (payload) {
+    applyPalette(payload.palette);
+    return;
+  }
+  // 后端暂时不可达时退回上次缓存，避免面板莫名变回默认紫色
+  try {
+    const cached = window.localStorage.getItem(PALETTE_KEY);
+    if (cached) applyPalette(cached);
+  } catch (error) { /* 忽略存储禁用 */ }
+}
+
+function applyTheme(theme, options = {}) {
+  state.theme = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = state.theme;
+  const label = $("#themeToggleLabel");
+  if (label) label.textContent = state.theme === "dark" ? "深色" : "浅色";
+  try {
+    window.localStorage.setItem(THEME_KEY, state.theme);
+  } catch (error) {
+    /* 忽略存储禁用 */
+  }
+  window.dispatchEvent(new CustomEvent("mc:theme", { detail: state.theme }));
+  // 2.6.6：localStorage 在部分 WebView 里会被清掉，主题再落一份到插件数据目录
+  if (options.persist !== false) {
+    apiPost("/ui-preferences/save", { dark_mode: state.theme === "dark" }).catch(() => {});
+  }
+}
+
+/* ------------------------------------------------------------
+   导航结构
+   ------------------------------------------------------------ */
+const NAV = [
+  { id: "overview", label: "总览", icon: "gauge", views: ["overview"] },
+  {
+    id: "library",
+    label: "记忆库",
+    icon: "library",
+    views: ["navigate", "inspect", "core", "botlife"],
+  },
+  {
+    id: "insight",
+    label: "洞察",
+    icon: "spark",
+    views: ["microscope", "synergy"],
+  },
+  {
+    id: "bridge",
+    label: "联动",
+    icon: "link",
+    views: ["companion", "external"],
+  },
+  {
+    id: "import",
+    label: "导入",
+    icon: "download",
+    views: ["chatimport", "migrate", "queue", "quarantine", "processed"],
+  },
+  {
+    id: "settings",
+    label: "设置",
+    icon: "sliders",
+    views: ["config", "acl"],
+  },
+];
+
+const VIEWS = {};
+
+function defineView(id, config) {
+  VIEWS[id] = Object.assign({ id }, config);
+}
+
+function findGroupOf(viewId) {
+  for (const group of NAV) {
+    if (group.views.includes(viewId)) return group.id;
+  }
+  return "overview";
+}
+
+/* ------------------------------------------------------------
+   侧栏渲染
+   ------------------------------------------------------------ */
+function renderRail() {
+  const host = $("#railNav");
+  host.innerHTML = NAV.map((group) => {
+    const isOpen = group.id === state.group;
+    const groupIcon = icon(group.icon);
+    const subs = group.views
+      .map((viewId) => {
+        const view = VIEWS[viewId];
+        if (!view || view.hidden) return "";
+        const active = state.view === viewId ? " is-active" : "";
+        return (
+          '<button class="nav-sub' + active + '" type="button" data-view="' + viewId + '">' +
+          esc(view.navLabel || view.title) +
+          "</button>"
+        );
+      })
+      .join("");
+    const hasSubs = subs.trim().length > 0;
+    const item =
+      '<button class="nav-item' + (group.id === state.group ? " is-active" : "") + '" type="button" ' +
+      'data-group="' + group.id + '" data-view="' + group.views[0] + '">' +
+      groupIcon +
+      '<span class="nav-label">' + esc(group.label) + "</span>" +
+      (hasSubs
+        ? '<span class="nav-chevron" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L10.5 8 6 12.5"/></svg></span>'
+        : "") +
+      "</button>";
+    return (
+      '<div class="nav-group' + (isOpen ? " is-open" : "") + '" data-group-wrap="' + group.id + '">' +
+      item +
+      (hasSubs ? '<div class="nav-subs"><div class="nav-subs-inner">' + subs + "</div></div>" : "") +
+      "</div>"
+    );
+  }).join("");
+}
+
+function setRailStatus(kind, text) {
+  const node = $("#railStatus");
+  if (!node) return;
+  node.className = "rail-status" + (kind ? " is-" + kind : "");
+  const label = $("#railStatusText");
+  if (label) label.textContent = text;
+}
+
+/* ------------------------------------------------------------
+   路由
+   ------------------------------------------------------------ */
+let renderToken = 0;
+
+async function go(viewId, options) {
+  const view = VIEWS[viewId];
+  if (!view || view.hidden) return;
+  const opts = options || {};
+  state.view = viewId;
+  state.group = findGroupOf(viewId);
+  try {
+    window.localStorage.setItem(NAV_KEY, viewId);
+  } catch (error) {
+    /* 忽略 */
+  }
+
+  const cinemaOverview = state.mode === "cinema" && viewId === "overview";
+  $("#viewEyebrow").textContent = cinemaOverview ? "MEMORY COMPANION / ARCHIVE OS" : (view.eyebrow || "Memory Companion");
+  $("#viewTitle").textContent = cinemaOverview ? "记忆终端" : view.title;
+  $("#viewHint").textContent = cinemaOverview ? "档案阵列、通道筛选与实时记忆状态" : (view.hint || "");
+  document.title = (cinemaOverview ? "记忆终端" : view.title) + " · 记忆面板";
+  renderRail();
+
+  const token = renderToken + 1;
+  renderToken = token;
+  const host = $("#content");
+  host.innerHTML = '<div class="skeleton" style="height:220px;border-radius:13px"></div>';
+
+  try {
+    const payload = await view.load(opts);
+    if (token !== renderToken) return;
+    host.innerHTML = "";
+    const node = document.createElement("div");
+    node.innerHTML = view.render(payload, opts);
+    host.appendChild(node);
+    if (typeof view.mount === "function") view.mount(node, payload, opts);
+  } catch (error) {
+    if (token !== renderToken) return;
+    host.innerHTML =
+      '<div class="empty"><b>这个视图没能加载出来</b><span>' + esc(error.message || "未知错误") + "</span></div>";
+  }
+}
+
+function refresh() {
+  go(state.view, { silent: true });
+}
+
+/* ------------------------------------------------------------
+   组件片段
+   ------------------------------------------------------------ */
+function kpi(label, value, foot, tone, goto, iconName, filter) {
+  const inner =
+    (iconName ? icon(iconName, "kpi-icon") : "") +
+    '<span class="kpi-label">' + esc(label) + "</span>" +
+    '<span class="kpi-value">' + esc(value) + "</span>" +
+    (foot ? '<span class="kpi-foot">' + esc(foot) + "</span>" : "");
+  const toneAttr = tone ? ' data-tone="' + esc(tone) + '"' : "";
+  if (goto) {
+    return (
+      '<button class="kpi is-link" type="button"' + toneAttr +
+      ' data-goto="' + esc(goto) + '"' +
+      (filter ? ' data-filter="' + esc(filter) + '"' : "") + ">" +
+      inner +
+      '<span class="kpi-go" aria-hidden="true">›</span></button>'
+    );
+  }
+  return '<article class="kpi"' + toneAttr + ">" + inner + "</article>";
+}
+
+function badge(text, tone) {
+  return '<span class="badge' + (tone ? '" data-tone="' + esc(tone) : "") + '">' + esc(text) + "</span>";
+}
+
+function emptyState(title, text) {
+  return '<div class="empty"><b>' + esc(title) + "</b><span>" + esc(text) + "</span></div>";
+}
+
+function card(title, sub, bodyHtml, actionsHtml, extraClass) {
+  return (
+    '<section class="card ' + (extraClass || "") + '">' +
+    '<div class="card-head"><div><h3>' + esc(title) + "</h3>" +
+    (sub ? '<div class="card-sub">' + esc(sub) + "</div>" : "") +
+    "</div>" +
+    (actionsHtml ? '<div class="card-head-actions">' + actionsHtml + "</div>" : "") +
+    "</div>" +
+    (bodyHtml || "") +
+    "</section>"
+  );
+}
+
+function meter(label, value, max) {
+  const pct = clamp(((Number(value) || 0) / (Number(max) || 1)) * 100, 0, 100);
+  return (
+    '<div class="meter"><div class="meter-head"><span>' + esc(label) + "</span><b>" + esc(num(value)) + "</b></div>" +
+    '<div class="meter-track"><div class="meter-fill" style="width:' + pct.toFixed(1) + '%"></div></div></div>'
+  );
+}
+
+const SCOPE_META = {
+  private: { label: "私聊", tone: "private", icon: "chat", desc: "一对一会话中沉淀的记忆" },
+  group: { label: "群聊", tone: "group", icon: "users", desc: "群窗口内的公共与成员记忆" },
+  profile: { label: "用户档案", tone: "relation", icon: "user", desc: "画像 / 偏好 / 关系的统一档案" },
+  personal: { label: "Bot 个人记忆", tone: "personal", icon: "sun", desc: "Bot 自身日程、相册与主观记忆" },
+  core: { label: "核心记忆", tone: "gold", icon: "star", desc: "强制注入的稳定事实与规则" },
+  external: { label: "外部接口", tone: "external", icon: "plug", desc: "由其他插件经 bridge 写入" },
+};
+
+const TYPE_LABEL = {
+  profile: "画像",
+  user_profile: "画像",
+  user_habit: "习惯",
+  preference: "偏好",
+  user_preference: "偏好",
+  relationship: "关系",
+  relationship_claim: "关系",
+  relationship_phase_summary: "关系阶段",
+  fact: "事实",
+  stable_fact: "稳定事实",
+  user_fact: "用户事实",
+  manual_memory: "手动记忆",
+  explicit_memory: "明确记忆",
+  event: "事件",
+  conversation_event: "会话事件",
+  important_event: "重要事件",
+  timeline_event: "时间线事件",
+  state: "稳定状态",
+  current_state: "当前状态",
+  stable_state: "稳定状态",
+  plan: "计划",
+  promise: "承诺",
+  emotion: "情绪",
+  schedule: "日程",
+  schedule_fragment: "日程片段",
+  daily_digest: "每日摘要",
+  action: "行为",
+  image_action: "图像行为",
+  thought: "想法",
+  companion_note: "陪伴想法",
+  internal_note: "内部想法",
+  summary: "摘要",
+  note: "备注",
+  rule: "规则",
+  boundary: "边界",
+};
+
+const VISIBILITY_LABEL = {
+  public: "公开",
+  private: "私有",
+  group_shared: "群内共享",
+  bot_self: "仅 Bot 自身",
+  restricted: "受限",
+};
+
+const LIFECYCLE_LABEL = {
+  active: "活跃",
+  stable: "稳定",
+  fading: "淡出",
+  archived: "归档",
+  expired: "过期",
+};
+
+const VALIDITY_LABEL = {
+  current: "当前有效",
+  historical: "历史有效",
+  unknown: "待确认",
+  superseded: "已被取代",
+};
+
+const DURABILITY_LABEL = { permanent: "永久", durable: "长期", transient: "短期" };
+const SENSITIVITY_LABEL = { low: "低", normal: "普通", high: "高", critical: "敏感" };
+const REALITY_LABEL = { real: "真实", fictional: "虚构", uncertain: "不确定" };
+
+const WEIGHT_LABEL = {
+  persona_importance: "人格重要性",
+  relationship_weight: "关系",
+  emotional_weight: "情绪",
+  promise_weight: "承诺",
+  open_loop_weight: "未完成",
+  creative_weight: "创作",
+  preference_weight: "偏好",
+  self_continuity_weight: "自我连续",
+  freshness_weight: "新鲜度",
+  scar_weight: "伤痕",
+  emotional_debt_weight: "情绪债",
+  intimacy_weight: "亲密度",
+  vulnerability_weight: "脆弱",
+};
+
+function memoryTone(memory) {
+  const scope = compact(memory.scope);
+  if (scope === "private") return "private";
+  if (scope === "group") return "group";
+  const type = compact(memory.memory_type);
+  if (type === "relationship") return "relation";
+  if (type === "preference" || type === "profile") return "relation";
+  if (type === "fact" || type === "state") return "fact";
+  if (compact(memory.source_plugin) && compact(memory.source_plugin) !== "self") return "external";
+  return "";
+}
+
+function memoryTitle(memory) {
+  const summary = compact(memory.canonical_summary);
+  if (summary) return summary;
+  const content = compact(memory.content);
+  if (!content) return "（空内容）";
+  const firstLine = content.split(/\r?\n/)[0].trim();
+  return firstLine || content.slice(0, 60);
+}
+
+function memoryRow(memory, index) {
+  const tone = memoryTone(memory);
+  const title = memoryTitle(memory);
+  const typeLabel = TYPE_LABEL[compact(memory.memory_type)] || compact(memory.memory_type) || "记忆";
+  const scopeLabel = SCOPE_META[compact(memory.scope)] ? SCOPE_META[compact(memory.scope)].label : compact(memory.scope) || "未分类";
+  const parts = [typeLabel, scopeLabel];
+  if (compact(memory.subject && memory.subject.name)) parts.push(compact(memory.subject.name));
+  if (compact(memory.updated_at_local)) parts.push(compact(memory.updated_at_local));
+  return (
+    '<button class="row" type="button" data-memory="' + esc(memory.id) + '">' +
+    '<div class="row-main"><div class="row-title">' + esc(clip(title, 96)) + "</div>" +
+    '<div class="row-sub">' + esc(parts.join(" · ")) + "</div></div>" +
+    '<div class="row-meta">' +
+    (tone ? badge(scopeLabel, tone) : "") +
+    badge("重要 " + num(compact(memory.importance, 0)), "accent") +
+    "</div></button>"
+  );
+}
+
+/* ============================================================
+   记忆详情抽屉
+   ============================================================ */
+function memoryDetailHtml(memory) {
+  const type = compact(memory.memory_type);
+  const scope = compact(memory.scope);
+  const tone = memoryTone(memory);
+  const weights = memory.persona_weights && typeof memory.persona_weights === "object" ? memory.persona_weights : {};
+  const weightKeys = Object.keys(weights).filter((key) => Number.isFinite(Number(weights[key])));
+  const tags = Array.isArray(memory.tags) ? memory.tags : [];
+  const topics = Array.isArray(memory.topics) ? memory.topics : [];
+  const facts = Array.isArray(memory.key_facts) ? memory.key_facts : [];
+  const range = memory.time_range && typeof memory.time_range === "object" ? memory.time_range : {};
+
+  const section = (title, body) =>
+    body ? '<div class="drawer-section"><h4>' + esc(title) + "</h4>" + body + "</div>" : "";
+
+  const kv = (pairs) =>
+    '<dl class="kv">' +
+    pairs
+      .filter((pair) => compact(pair[1]) !== "")
+      .map((pair) => "<dt>" + esc(pair[0]) + "</dt><dd>" + esc(pair[1]) + "</dd>")
+      .join("") +
+    "</dl>";
+
+  const rows = [
+    section(
+      "内容",
+      '<div class="drawer-content">' + esc(compact(memory.content, "（空）")) + "</div>"
+    ),
+    section(
+      "摘要",
+      compact(memory.canonical_summary)
+        ? '<div class="drawer-content">' + esc(memory.canonical_summary) + "</div>"
+        : ""
+    ),
+    facts.length
+      ? section(
+          "关键事实",
+          '<div class="row-list">' +
+            facts.map((fact) => '<div class="row" style="cursor:default"><div class="row-main"><div class="row-title" style="white-space:normal">' + esc(fact) + "</div></div></div>").join("") +
+            "</div>"
+        )
+      : "",
+    section("证据", compact(memory.evidence_preview) ? '<div class="drawer-content">' + esc(memory.evidence_preview) + "</div>" : ""),
+    section(
+      "分类与来源",
+      kv([
+        ["记忆 ID", compact(memory.id)],
+        ["类型", (TYPE_LABEL[type] || type || "-") + (type ? "（" + type + "）" : "")],
+        ["范围", (SCOPE_META[scope] ? SCOPE_META[scope].label : scope || "-")],
+        ["会话", compact(memory.session_id)],
+        ["群 ID", compact(memory.group_id)],
+        ["来源插件", compact(memory.source_plugin) || "本插件"],
+        ["导入批次", compact(memory.import_batch_id)],
+        ["主体", compact(memory.subject && memory.subject.name) + (compact(memory.subject && memory.subject.role) ? "（" + compact(memory.subject.role) + "）" : "")],
+        ["客体", compact(memory.object && memory.object.name)],
+        ["人格 ID", compact(memory.persona_id)],
+        ["归属 Bot", compact(memory.owner_bot_id)],
+      ])
+    ),
+    section(
+      "权重",
+      kv([
+        ["重要性", num(memory.importance)],
+        ["置信度", num(memory.confidence)],
+        ["显著性", num(memory.salience)],
+        ["强化分", num(memory.reinforcement_score)],
+        ["注入次数", String(int(memory.injection_count))],
+        ["最近注入", fmtTime(memory.last_injected_at)],
+      ]) +
+        (weightKeys.length
+          ? '<div class="tag-row" style="margin-top:9px">' +
+            weightKeys
+              .slice(0, 12)
+              .map((key) => badge((WEIGHT_LABEL[key] || key) + " " + num(weights[key]), "accent"))
+              .join("") +
+            "</div>"
+          : "")
+    ),
+    section(
+      "生命周期",
+      kv([
+        ["可见性", (VISIBILITY_LABEL[compact(memory.visibility)] || compact(memory.visibility) || "-")],
+        ["可说性", compact(memory.sayability)],
+        ["现实层级", (REALITY_LABEL[compact(memory.reality_level)] || compact(memory.reality_level) || "-")],
+        ["生命周期", (LIFECYCLE_LABEL[compact(memory.lifecycle)] || compact(memory.lifecycle) || "-")],
+        ["时效状态", (VALIDITY_LABEL[compact(memory.validity_status)] || compact(memory.validity_status) || "-")],
+        ["有效区间", (compact(memory.valid_from) || "…") + " → " + (compact(memory.valid_to) || "…")],
+        ["持久度", (DURABILITY_LABEL[compact(memory.durability)] || compact(memory.durability) || "-")],
+        ["敏感度", (SENSITIVITY_LABEL[compact(memory.sensitivity)] || compact(memory.sensitivity) || "-")],
+        ["记忆理由", compact(memory.memory_reason)],
+        ["提及策略", compact(memory.mention_policy)],
+        ["可提及分", memory.mentionability_score === null || memory.mentionability_score === undefined ? "" : num(memory.mentionability_score)],
+        ["关系阶段", compact(memory.relationship_phase)],
+        ["衰减模式", compact(memory.decay_mode)],
+        ["时间范围", compact(range.start_at_local) ? compact(range.start_at_local) + " → " + compact(range.end_at_local) : ""],
+      ])
+    ),
+    section(
+      "时间",
+      kv([
+        ["创建", fmtTime(memory.created_at) + "（" + compact(memory.created_at_local) + "）"],
+        ["更新", fmtTime(memory.updated_at) + "（" + compact(memory.updated_at_local) + "）"],
+        ["发生", fmtTime(memory.occurred_at) + "（" + compact(memory.occurred_at_local) + "）"],
+      ])
+    ),
+    section(
+      "标签与主题",
+      (tags.length ? '<div class="tag-row">' + tags.map((tag) => badge(tag, "fact")).join("") + "</div>" : "") +
+        (topics.length ? '<div class="tag-row" style="margin-top:6px">' + topics.map((tag) => badge(tag, "gold")).join("") + "</div>" : "")
+    ),
+    section(
+      "去重与合并",
+      kv([
+        ["规范键", compact(memory.canonical_key)],
+        ["合并条数", String(int(memory.merged_count))],
+        ["内容指纹", compact(memory.content_fingerprint)],
+        ["复核状态", compact(memory.review_status)],
+      ])
+    ),
+  ].join("");
+
+  const actions =
+    '<div class="drawer-section"><h4>操作</h4>' +
+    '<div class="card is-tight" style="background:var(--surface-2)">' +
+    '<div class="config-form">' +
+    '<button class="btn is-sm assembly-open-btn" type="button" id="openAssemblyViewerBtn">打开三维结构</button>' +
+    '<div class="field"><span>内容</span><textarea id="editContent" rows="5">' + esc(compact(memory.content)) + "</textarea></div>" +
+    '<div class="field is-inline"><span>重要性</span><input id="editImportance" type="number" step="0.01" min="0" max="1" value="' + esc(num(memory.importance, 2) === "-" ? "0.5" : num(memory.importance, 2)) + '" /></div>' +
+    '<div class="field is-inline"><span>置信度</span><input id="editConfidence" type="number" step="0.01" min="0" max="1" value="' + esc(num(memory.confidence, 2) === "-" ? "0.5" : num(memory.confidence, 2)) + '" /></div>' +
+    '<div class="field is-inline"><span>显著性</span><input id="editSalience" type="number" step="0.01" min="0" max="1" value="' + esc(num(memory.salience, 2) === "-" ? "0.5" : num(memory.salience, 2)) + '" /></div>' +
+    '<div class="field is-inline"><span>可见性</span><select id="editVisibility">' +
+      Object.keys(VISIBILITY_LABEL).map((key) => '<option value="' + key + '"' + (compact(memory.visibility) === key ? " selected" : "") + ">" + VISIBILITY_LABEL[key] + "</option>").join("") +
+    "</select></div>" +
+    '<div class="field is-inline"><span>生命周期</span><select id="editLifecycle">' +
+      Object.keys(LIFECYCLE_LABEL).map((key) => '<option value="' + key + '"' + (compact(memory.lifecycle) === key ? " selected" : "") + ">" + LIFECYCLE_LABEL[key] + "</option>").join("") +
+    "</select></div>" +
+    '<div class="pill-row" style="justify-content:flex-end;margin-top:4px">' +
+      '<button class="btn is-sm is-danger" type="button" id="deleteMemoryBtn">删除</button>' +
+      '<button class="btn is-sm is-primary" type="button" id="saveMemoryBtn">保存修改</button>' +
+    "</div></div></div></div>";
+
+  return rows + actions;
+}
+
+function bindMemoryActions(memoryId) {
+  const viewerBtn = $("#openAssemblyViewerBtn");
+  if (viewerBtn) viewerBtn.addEventListener("click", () => openAssemblyViewer(memoryId));
+  const saveBtn = $("#saveMemoryBtn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      const payload = {
+        id: memoryId,
+        content: $("#editContent").value,
+        importance: Number($("#editImportance").value),
+        confidence: Number($("#editConfidence").value),
+        salience: Number($("#editSalience").value),
+        visibility: $("#editVisibility").value,
+        lifecycle: $("#editLifecycle").value,
+      };
+      await withBusy("正在保存…", async () => {
+        await apiPost("/memory/update", payload);
+        invalidatePool();
+        toast("记忆已更新", "ok");
+        closeDrawer();
+        refresh();
+      });
+    });
+  }
+  const delBtn = $("#deleteMemoryBtn");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      const confirmed = await showInlineConfirmation("删除记忆", "确定删除这条记忆？该操作不可撤销。", "删除");
+      if (!confirmed) return;
+      await withBusy("正在删除…", async () => {
+        await apiPost("/memory/delete", { id: memoryId });
+        invalidatePool();
+        toast("记忆已删除", "ok");
+        closeDrawer();
+        refresh();
+      });
+    });
+  }
+}
+
+async function openMemory(memoryId) {
+  await withBusy("正在读取记忆…", async () => {
+    const response = await apiGet("/memory?id=" + encodeURIComponent(memoryId));
+    // The page API wraps detail responses as { memory: ... }; normalize it
+    // here so all detail renderers receive the actual memory object.
+    const memory = response && response.memory ? response.memory : response;
+    if (!memory || typeof memory !== "object") throw new Error("记忆详情为空");
+    openDrawer(clip(memoryTitle(memory), 42), "记忆详情", memoryDetailHtml(memory));
+    bindMemoryActions(memoryId);
+  });
+}
+
+async function openAssemblyViewer(memoryId) {
+  const viewer = $("#assemblyViewer");
+  const canvas = $("#assemblyViewerCanvas");
+  if (!viewer || !canvas) return;
+  const ticket = ++assemblyViewerTicket;
+  const title = $("#drawerTitle")?.textContent || "档案结构";
+  $("#assemblyViewerTitle").textContent = title;
+  $("#assemblyViewerFile").textContent = "FILE " + compact(memoryId) + " / INTERNAL DATABASE";
+  viewer.hidden = false;
+  viewer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("assembly-viewer-open");
+  $("#assemblyViewerLoading").hidden = false;
+  $("#assemblyViewerRetry").hidden = true;
+  const mount = () => window.MemoryCinema3D?.mountAssemblyViewer(canvas, {
+    onState: (value) => { const node = $("#assemblyViewerState"); if (node) node.textContent = value; },
+    onError: () => { const node = $("#assemblyViewerRetry"); if (node) node.hidden = false; },
+  });
+  let mounted;
+  if (window.MemoryCinema3D?.mountAssemblyViewer) mounted = await mount();
+  else {
+    await Promise.race([
+      new Promise((resolve) => window.addEventListener("memory-cinema-ready", resolve, { once: true })),
+      sleep(8000),
+    ]);
+    if (!window.MemoryCinema3D?.mountAssemblyViewer) {
+      canvas.innerHTML = '<span class="scene-loading">ASSEMBLY VIEWER / UNAVAILABLE</span>';
+      $("#assemblyViewerLoading").hidden = true;
+      $("#assemblyViewerRetry").hidden = false;
+      return;
+    }
+    mounted = await mount();
+  }
+  if (ticket !== assemblyViewerTicket || viewer.hidden) {
+    mounted?.dispose?.();
+    return;
+  }
+  state.assemblyViewer = mounted;
+  $("#assemblyViewerLoading").hidden = true;
+}
+
+function closeAssemblyViewer() {
+  assemblyViewerTicket += 1;
+  state.assemblyViewer?.dispose?.();
+  state.assemblyViewer = null;
+  const viewer = $("#assemblyViewer");
+  if (viewer) {
+    viewer.hidden = true;
+    viewer.setAttribute("aria-hidden", "true");
+  }
+  document.body.classList.remove("assembly-viewer-open");
+}
+
+function applyMode(mode) {
+  state.mode = mode === "cinema" ? "cinema" : "standard";
+  document.documentElement.dataset.uiMode = state.mode;
+  const button = $("#modeToggle");
+  const label = $("#modeToggleLabel");
+  if (button) button.setAttribute("aria-pressed", state.mode === "cinema" ? "true" : "false");
+  if (label) label.textContent = state.mode === "cinema" ? "标准模式" : "终端模式";
+  try {
+    window.localStorage.setItem(MODE_KEY, state.mode);
+  } catch (error) {
+    /* 忽略存储禁用 */
+  }
+}
+
+/* ============================================================
+   视图：总览
+   ============================================================ */
+function renderCinemaOverview(data) {
+  const stats = data.stats || {};
+  const memories = Array.isArray(data.memories) ? data.memories : [];
+  const coreRecords = (data.core || []).map((block) => ({
+    id: block.id,
+    scope: "core",
+    memory_type: block.kind || "fact",
+    canonical_summary: block.label || "核心记忆",
+    content: block.content,
+    isCore: true,
+  }));
+  const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+  const records = memories.length ? memories.slice(0, 32).concat(coreRecords.slice(0, 8)) : buckets.slice(0, 24).map((bucket, index) => ({
+    id: "bucket-" + index,
+    scope: bucket.scope,
+    target_id: bucket.target_id,
+    canonical_summary: bucket.label || bucket.target_name || bucket.target_id,
+    content: bucket.sample_session_id || "此档案窗口暂未提供摘要",
+    memory_count: bucket.memory_count,
+    updated_at_local: bucket.last_activity_at || bucket.updated_at,
+    isBucket: true,
+  }));
+  const cinemaChannel = (memory) => {
+    const scope = compact(memory.scope);
+    const type = compact(memory.memory_type);
+    const visibility = compact(memory.visibility);
+    if (scope === "core") return "core";
+    if (scope === "personal" || visibility === "bot_self" || type === "companion_note" || type === "schedule") return "personal";
+    if (scope === "profile" || type === "profile" || type === "preference" || type === "user_profile") return "profile";
+    if (type === "relationship" || type === "relationship_claim" || type === "relationship_phase_summary") return "relationship";
+    return "session";
+  };
+  const channelLabels = { session: "会话存档", profile: "用户画像", relationship: "关系脉络", core: "核心记忆", personal: "Bot 生活" };
+  const recordButtons = records.map((memory, index) => {
+    const scope = compact(memory.scope) || "private";
+    const channel = cinemaChannel(memory);
+    const type = compact(memory.memory_type) || (memory.isBucket ? "archive" : "memory");
+    const title = memoryTitle(memory);
+    const detail = memory.isBucket
+      ? (compact(memory.target_id) || "未命名窗口") + " · " + fmtInt(memory.memory_count) + " 条记录"
+      : (TYPE_LABEL[type] || type) + " · " + (SCOPE_META[scope] ? SCOPE_META[scope].label : scope);
+    return '<button class="terminal-record" type="button" data-terminal-index="' + index + '" data-memory="' + esc(memory.isBucket || memory.isCore ? "" : memory.id) + '" data-core="' + esc(memory.isCore ? memory.id : "") + '" data-terminal-channel="' + esc(channel) + '" data-terminal-text="' + esc(title + " " + detail) + '">' +
+      '<span class="terminal-record-id mono">' + String(index + 1).padStart(3, "0") + '</span><span class="terminal-record-channel">' + esc(channelLabels[channel] || channel) + '</span><strong>' + esc(clip(title, 72)) + '</strong><span class="terminal-record-meta">' + esc(detail) + '</span><i class="terminal-record-signal">●</i></button>';
+  }).join("");
+  return '<section class="terminal-stage" aria-label="Rhine Lab 记忆终端">' +
+    '<div class="terminal-stage-top"><span class="terminal-kicker">RHINE LAB / MEMORY ARCHIVE</span><span class="terminal-session mono">SESSION M-' + String(int(stats.total_memories)).padStart(6, "0") + ' <i></i> AUTHORIZED</span></div>' +
+    '<div class="terminal-scene-wrap"><div class="cinema-scene" id="cinemaScene" aria-label="三维档案阵列"><span class="scene-loading">ARCHIVE SCENE / LOADING</span></div><div class="terminal-scanline" aria-hidden="true"></div></div>' +
+    '<div class="terminal-callout"><div class="terminal-label">INTERNAL DATABASE <span>/</span> <b id="terminalCategory">记忆档案</b></div><button class="terminal-file-title" id="terminalFileTitle" type="button"><span>FILE NUMBER: </span><strong id="terminalFileId">M-001</strong><span>↗</span></button><div class="terminal-rule"><i></i></div><div class="terminal-summary"><strong id="terminalSelectedTitle">等待档案</strong><span id="terminalSelectedMeta">MEMORY CHANNEL</span></div><button class="terminal-access" id="terminalAccess" type="button">ACCESS MEMORY <span>→</span></button></div>' +
+    '<div class="terminal-feed-head"><span class="terminal-label">ARCHIVE STREAM / 记录带</span><label><span>/</span><input id="terminalSearch" type="search" placeholder="检索记录" autocomplete="off" /></label><b id="terminalResultCount">' + fmtInt(records.length) + ' RECORDS</b></div>' +
+    '<div class="terminal-feed" id="terminalFeed">' + (recordButtons || emptyState("暂无记录", "连接后会在这里展开记忆流。")) + '</div>' +
+    '<div class="terminal-controls"><div class="terminal-counter"><span>ARCHIVE / SELECT</span><strong><b id="terminalSelectedNumber">01</b><i>/</i><b>' + String(Math.max(records.length, 1)).padStart(2, "0") + '</b></strong></div><div class="terminal-arrows"><button type="button" data-terminal-prev aria-label="上一个记忆">↑</button><button type="button" data-terminal-next aria-label="下一个记忆">↓</button></div><div class="terminal-column"><button type="button" data-terminal-column-prev aria-label="上一记忆通道">←</button><span><small>MEMORY CHANNEL</small><b id="terminalChannel">ALL RECORDS</b></span><button type="button" data-terminal-column-next aria-label="下一记忆通道">→</button></div><span class="terminal-hint"><kbd>←</kbd><kbd>→</kbd> 通道 <span>/</span> <kbd>↑</kbd><kbd>↓</kbd> 档案 <span>/</span> <kbd>ENTER</kbd> 读取</span></div>' +
+    '<div class="terminal-marquee"><span>ARCHIVE CHANNEL CONNECTED</span><i>●</i><span>PERSONAL CONTEXT READY</span><i>●</i><span>RECALL ENGINE STANDBY</span><i>●</i><span>ARCHIVE CHANNEL CONNECTED</span></div>' +
+    '</section>';
+}
+
+defineView("overview", {
+  title: "总览",
+  navLabel: "总览",
+  eyebrow: "Overview",
+  hint: "记忆库规模、范围分布与联动状态的整体快照",
+  async load() {
+    const [statsPayload, buckets, core, caps, coord, memories, personal, injectionLogs, botsPayload] = await Promise.all([
+      apiGet("/stats"),
+      apiTry(() => apiGet("/buckets?limit=160"), { buckets: [] }),
+      apiTry(() => apiGet("/core-memory"), { blocks: [] }),
+      apiTry(() => apiGet("/capabilities/bot-personal"), {}),
+      apiTry(() => apiGet("/coordination/status"), { status: {} }),
+      // 列表接口必须带范围；总览用显式的 scope=all 表示“所有范围”。
+      apiTry(() => apiGet("/memories?scope=all&limit=80"), { memories: [] }),
+      apiTry(() => apiGet("/companion/personal-memory?limit=1"), null),
+      apiTry(() => apiGet("/logs?limit=12"), { items: [] }),
+      apiTry(() => apiGet("/bots"), { bots: [] }),
+    ]);
+    const stats = (statsPayload && statsPayload.stats) || {};
+    state.stats = stats;
+    state.buckets = Array.isArray(buckets.buckets) ? buckets.buckets : [];
+    return {
+      stats,
+      buckets: state.buckets,
+      core: core.blocks || [],
+      caps,
+      personal,
+      coord: coord.status || {},
+      memories: memories.memories || [],
+      injectionLogs: Array.isArray(injectionLogs.items) ? injectionLogs.items : [],
+      bots: Array.isArray(botsPayload.bots) ? botsPayload.bots : [],
+    };
+  },
+  render(data) {
+    if (state.mode === "cinema") return renderCinemaOverview(data);
+    const stats = data.stats || {};
+    const byScope = stats.by_scope || {};
+    const progress = stats.summary_progress || {};
+    const storageMb = (int(stats.memory_storage_bytes) / 1048576).toFixed(1);
+    const privateCount = int(byScope.private);
+    const groupCount = int(byScope.group);
+
+    const kpis = [
+      kpi("记忆总量", fmtInt(stats.total_memories), storageMb + " MB 存储", "accent", "inspect", "db"),
+      kpi("私聊记忆", fmtInt(privateCount), "一对一会话", "private", "inspect", "user", "scope:private"),
+      kpi("群聊记忆", fmtInt(groupCount), "群窗口沉淀", "group", "inspect", "users", "scope:group"),
+      kpi("用户档案", fmtInt(stats.identities), "已识别身份", "relation", "inspect", "tag", "profile"),
+      kpi("核心记忆", fmtInt((data.core || []).length), "强制注入块", "gold", "core", "star"),
+      kpi("开放线程", fmtInt(stats.open_threads), "跨窗口续接", "fact", "navigate", "link"),
+      kpi("原文已记录", fmtInt(progress.raw_events), "原始会话事件", "group", "inspect", "library"),
+      kpi("会话记忆已生成", fmtInt(progress.conversation_memories), "不含待审核候选", "fact", "inspect", "chat"),
+      kpi("待处理批次", fmtInt(progress.pending_batches), "正常排队等总结 · 不是错误", "accent", "queue", "clock"),
+      kpi("待修复批次", fmtInt(progress.quarantined_batches), "总结失败被隔离 · 冻结原文 " + fmtInt(progress.frozen_events) + " 条", "gold", "quarantine", "shield"),
+      kpi("已处理，无新增记忆", fmtInt(progress.no_memory_batches), "原文保留，不重复总结", "private", "processed", "box"),
+    ].join("");
+
+    const entries = [
+      ["navigate", "记忆导航", "按私聊 / 群聊 / 个人等范围进入", "scope"],
+      ["inspect", "记忆检视", "逐条查看并修正记忆参数", "db"],
+      ["microscope", "记忆显微镜", "模拟一次真实召回", "scope"],
+      ["botlife", "Bot 日程与相册", "Bot 自身的生活记录", "camera"],
+      ["config", "模块配置", "按模块调整检索与注入策略", "sliders"],
+    ]
+      .map(
+        (item) =>
+          '<button class="row" type="button" data-goto="' + item[0] + '">' +
+          icon(item[3], "scope-icon") +
+          '<div class="row-main"><div class="row-title">' + esc(item[1]) + "</div>" +
+          '<div class="row-sub">' + esc(item[2]) + "</div></div>" +
+          '<div class="row-meta"><span class="badge">进入 ›</span></div></button>'
+      )
+      .join("");
+
+    const recent = (data.buckets || [])
+      .slice()
+      .sort((a, b) => String(b.last_activity_at || b.updated_at || "").localeCompare(String(a.last_activity_at || a.updated_at || "")))
+      .slice(0, 8)
+      .map((bucket) => {
+        const scope = compact(bucket.scope);
+        const meta = SCOPE_META[scope] || { label: scope || "未分类", tone: "" };
+        return (
+          '<button class="row" type="button" data-goto="inspect" data-scope="' + esc(scope) + '" data-target="' + esc(compact(bucket.target_id)) + '">' +
+          '<div class="row-main"><div class="row-title">' + esc(compact(bucket.label) || compact(bucket.target_name) || compact(bucket.target_id) || "未命名窗口") + "</div>" +
+          '<div class="row-sub">' + esc(compact(bucket.sample_session_id) || compact(bucket.target_id) || "-") + "</div></div>" +
+          '<div class="row-meta">' + badge(meta.label, meta.tone) + badge(fmtInt(bucket.memory_count) + " 条") + "</div></button>"
+        );
+      })
+      .join("");
+
+    const bridges = [];
+    const coordStatus = data.coord || {};
+    const personalStatus = companionStatus(data.caps, data.personal);
+    const bridgeHealth = compact(coordStatus.bridge && coordStatus.bridge.health) || "unknown";
+    /* 联动要分三态，别把「没装」画成「坏了」：没装是与用户无关的中性灰点，
+       装了但桥接降级才是需要去看的黄点，全红留给真出错。 */
+    bridges.push([
+      !personalStatus.installed ? "is-off" : bridgeHealth === "ready" ? "is-ok" : bridgeHealth === "degraded" ? "is-warn" : "is-bad",
+      "陪伴插件联动",
+      !personalStatus.installed
+        ? "未安装陪伴插件"
+        : bridgeHealth === "ready" ? "已连接" : bridgeReasonText(coordStatus.bridge && coordStatus.bridge.reason_code) || "未连接",
+    ]);
+    bridges.push([
+      !personalStatus.installed ? "is-off" : personalStatus.available ? "is-ok" : "is-warn",
+      "Bot 个人记忆",
+      !personalStatus.installed
+        ? "装上陪伴插件后可用"
+        : personalStatus.available
+          ? (personalStatus.dailyPlanEnabled ? "日程已启用" : "日程未启用") + " · " + (personalStatus.detailEnabled ? "细化已启用" : "细化未启用")
+          : personalStatus.reason || "不可用",
+    ]);
+    const injectionLogCount = Number(stats.injection_logs) || 0;
+    bridges.push([
+      injectionLogCount > 0 ? "is-ok" : "is-off",
+      "外部写入接口",
+      injectionLogCount > 0 ? injectionLogCount + " 条注入日志" : "暂无注入日志",
+    ]);
+    const linkageNote = personalStatus.installed
+      ? ""
+      : '<p class="section-note">未检测到 astrbot_plugin_private_companion。<b>记忆功能不受影响</b>，'
+        + '装上陪伴插件后这里会显示它的日程、相册与表达权威归属。'
+        + '<button class="btn is-sm" type="button" data-goto="companion" style="margin-left:8px">查看联动页</button></p>';
+
+    const injectionLogs = Array.isArray(data.injectionLogs) ? data.injectionLogs : [];
+    const injectionRows = injectionLogs
+      .slice(0, 12)
+      .map((item) => {
+        const selected = Array.isArray(item.selected_memories) ? item.selected_memories : [];
+        const blocked = Array.isArray(item.blocked_reasons) ? item.blocked_reasons : [];
+        const query = compact(item.query) || "无检索词";
+        const scopeTag = (memory) => {
+          const key = compact(memory.scope);
+          if (key === "group") return "群聊·";
+          if (key === "private") return "私聊·";
+          if (key === "profile") return "档案·";
+          if (key === "personal") return "Bot·";
+          return "";
+        };
+        const selectedText = selected.length
+          ? selected
+              .slice(0, 2)
+              .map((memory) => {
+                const logSession = compact(item.session_id);
+                const memorySession = compact(memory.session_id);
+                const cross = logSession && memorySession && logSession !== memorySession ? "↔跨窗口 " : "";
+                return cross + scopeTag(memory) + memoryTitle(memory);
+              })
+              .join("；")
+          : blocked.length
+            ? "未注入记忆 · 过滤 " + blocked.length + " 项"
+            : "未注入记忆";
+        return (
+          '<div class="row" style="cursor:default;align-items:flex-start">' +
+            '<div class="row-main" style="min-width:0">' +
+              '<div class="row-title" title="' + esc(query) + '">' + esc(clip(query, 72)) + "</div>" +
+              '<div class="row-sub">' + esc(fmtTime(item.created_at)) + " · " +
+                esc(selected.length + " 条记忆 · " + int(item.injection_chars) + " 字") + "</div>" +
+              '<div class="section-note" style="margin-top:5px;white-space:normal">' + esc(clip(selectedText, 180)) + "</div>" +
+            "</div>" +
+            '<div class="row-meta">' +
+              badge(selected.length ? "已注入" : "未注入", selected.length ? "ok" : "warn") +
+              (blocked.length ? badge("过滤 " + blocked.length, "") : "") +
+            "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+    const fallbackOwners = (stats && stats.by_owner_bot) || {};
+    const botOwners = Array.isArray(data.bots) && data.bots.length
+      ? data.bots
+      : Object.keys(fallbackOwners).map((key) => ({
+          id: key === "<empty>" ? "" : key,
+          name: "",
+          count: int(fallbackOwners[key]),
+        }));
+    const personaName = compact(data.persona);
+    const botTotal = botOwners.reduce((sum, item) => sum + int(item.count), 0) || 1;
+    const botRows = botOwners
+      .map((item) => {
+        const count = int(item.count);
+        const botId = compact(item.id);
+        const ownerKey = botId || "__empty__";
+        const title = compact(item.name) || personaName || (botId ? "Bot " + botId : "未标记归属");
+        const sub = botId && compact(item.name) ? botId : "";
+        return (
+          '<button class="row is-clickable" type="button" data-goto="inspect" data-owner-bot="' + esc(ownerKey) + '">' +
+            '<div class="row-main" style="min-width:0">' +
+              '<div class="row-title">' + esc(title) + (sub ? ' <span class="bot-id">' + esc(sub) + "</span>" : "") + "</div>" +
+              '<div class="bot-bar"><span style="width:' + Math.max(3, Math.round((count / botTotal) * 100)) + '%"></span></div>' +
+            "</div>" +
+            '<div class="row-meta">' + badge(fmtInt(count) + " 条", "fact") + "</div>" +
+          "</button>"
+        );
+      })
+      .join("");
+    const botCard = botOwners.length
+      ? card("Bot 记忆分布", "共 " + botOwners.length + " 个归属 · 点名字看这个 Bot 的记忆", '<div class="row-list">' + botRows + "</div>", '<button class="btn is-sm is-ghost" type="button" data-goto="inspect" data-filter="all">全部记忆</button>')
+      : card("Bot 记忆分布", "还没有归属数据", emptyState("暂无归属", "记忆写入后会按 Bot 归属统计。"));
+
+    const drainInfo = (stats && stats.summary_drain) || {};
+    const drainLabel =
+      drainInfo.state === "running" ? "正在消化积压"
+      : drainInfo.state === "degraded" ? "上一轮出错"
+      : drainInfo.state === "scheduled" ? "等待下一轮"
+      : "未启动";
+    const drainCard = card(
+      "自动消化",
+      "后台定时扫未总结的原文",
+      '<div class="row-list">' +
+        '<div class="row"><div class="row-main"><div class="row-title">' + esc(drainLabel) + "</div>" +
+          '<div class="row-sub">' + esc(compact(drainInfo.last_result) || "还没有跑过") + "</div></div>" +
+          '<div class="row-meta">' + esc(compact(drainInfo.last_completed_at) || "—") + "</div></div>" +
+        (compact(drainInfo.last_error)
+          ? '<div class="row"><div class="row-main"><div class="row-title">最近错误</div><div class="row-sub">' + esc(drainInfo.last_error) + "</div></div></div>"
+          : "") +
+      "</div>",
+      '<button class="btn is-sm is-ghost" type="button" data-goto="queue">看排队中</button>'
+    );
+
+    const injectionCard = card(
+      "最近注入",
+      injectionLogs.length ? "最近 12 轮主链注入记录" : "暂无可展示的注入记录",
+      injectionRows || emptyState("暂无注入记录", "开启记忆注入并产生请求后，这里会显示最近轮次。"),
+      '<button class="btn is-sm is-ghost" type="button" data-refresh-injection>刷新</button>'
+    );
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="kpi-row">' + kpis + "</div>" +
+      '<div class="grid split-2">' +
+        card("功能入口", "六个常用工作区", '<div class="row-list">' + entries + "</div>") +
+        '<div style="display:grid;gap:16px">' +
+          card("最近活跃范围", (data.buckets || []).length + " 个窗口", '<div class="row-list">' + (recent || emptyState("暂无范围", "还没有可展示的记忆窗口。")) + "</div>") +
+          card(
+            "联动状态",
+            "陪伴插件与外部接口",
+            '<div class="row-list" style="gap:6px">' +
+              bridges.map((item) => '<div class="link-item ' + item[0] + '"><span class="link-dot"></span><b>' + esc(item[1]) + "</b><span>" + esc(item[2]) + "</span></div>").join("") +
+              "</div>" + linkageNote
+          ) +
+        "</div>" +
+      "</div>" +
+      botCard +
+      drainCard +
+      '<div class="grid g4">' +
+        kpi("稳定记忆", fmtInt(stats.stable_memories), "lifecycle=stable_memory", "fact", "inspect", "heart") +
+        kpi("时间线事件", fmtInt(stats.timeline_events), "结构化事件流", "group", "navigate", "clock") +
+        kpi("关系边", fmtInt(stats.relationships), "实体间关系", "relation", "navigate", "link") +
+        kpi("ACL 规则", fmtInt(stats.acl_rules), "跨窗口读写授权", "gold", "acl", "shield") +
+      "</div>" +
+      injectionCard +
+      "</div>"
+    );
+  },
+  mount(node) {
+    $("[data-refresh-injection]", node)?.addEventListener("click", () => refresh());
+    const sceneRoot = $("#cinemaScene", node);
+    if (sceneRoot) {
+      const mountScene = () => window.MemoryCinema3D && window.MemoryCinema3D.mountArchiveScene(sceneRoot);
+      if (window.MemoryCinema3D) mountScene();
+      else window.addEventListener("memory-cinema-ready", mountScene, { once: true });
+      if (!window.MemoryCinema3D) sceneRoot.dataset.waitingForScene = "true";
+      /* Static module loading is rewritten by AstrBot to include its asset token. */
+      window.setTimeout(() => {
+        if (!window.MemoryCinema3D && sceneRoot.isConnected) sceneRoot.innerHTML = '<span class="scene-loading">ARCHIVE SCENE / UNAVAILABLE</span>';
+      }, 8000);
+    }
+    const records = $$(".terminal-record", node);
+    const search = $("#terminalSearch", node);
+    const resultCount = $("#terminalResultCount", node);
+    const channels = ["all", "session", "profile", "relationship", "core", "personal"];
+    let selectedIndex = 0;
+    let channelIndex = 0;
+    const select = (index, focus = false) => {
+      if (!records.length) return;
+      selectedIndex = (index + records.length) % records.length;
+      const record = records[selectedIndex];
+      records.forEach((item) => item.classList.toggle("is-selected", item === record));
+      if (sceneRoot) sceneRoot.dataset.selectedIndex = String(selectedIndex);
+      const title = $("#terminalSelectedTitle", node);
+      const meta = $("#terminalSelectedMeta", node);
+      const id = $("#terminalFileId", node);
+      const number = $("#terminalSelectedNumber", node);
+      const category = $("#terminalCategory", node);
+      const channel = $("#terminalChannel", node);
+      if (title) title.textContent = $("strong", record)?.textContent || "等待档案";
+      if (meta) meta.textContent = $(".terminal-record-meta", record)?.textContent || "MEMORY CHANNEL";
+      if (id) id.textContent = "M-" + String(selectedIndex + 1).padStart(3, "0");
+      if (number) number.textContent = String(selectedIndex + 1).padStart(2, "0");
+      if (category) category.textContent = $(".terminal-record-channel", record)?.textContent || "记忆档案";
+      if (channel) channel.textContent = $(".terminal-record-channel", record)?.textContent || "ALL RECORDS";
+      if (focus) record.focus({ preventScroll: true });
+    };
+    const applySearch = () => {
+      const query = compact(search?.value).toLowerCase();
+      let visible = 0;
+      records.forEach((record) => {
+        const shown = !query || compact(record.dataset.terminalText).toLowerCase().includes(query);
+        record.hidden = !shown;
+        if (shown) visible += 1;
+      });
+      if (resultCount) resultCount.textContent = visible + " RECORDS";
+    };
+    search?.addEventListener("input", applySearch);
+    records.forEach((record, index) => record.addEventListener("click", () => {
+      select(index);
+      if (record.dataset.memory) openMemory(record.dataset.memory);
+      else if (record.dataset.core) go("core");
+      else go("inspect");
+    }));
+    $("#terminalFileTitle", node)?.addEventListener("click", () => records[selectedIndex]?.click());
+    $("#terminalAccess", node)?.addEventListener("click", () => records[selectedIndex]?.click());
+    $("[data-terminal-prev]", node)?.addEventListener("click", () => select(selectedIndex - 1, true));
+    $("[data-terminal-next]", node)?.addEventListener("click", () => select(selectedIndex + 1, true));
+    $("[data-terminal-column-prev]", node)?.addEventListener("click", () => {
+      channelIndex = (channelIndex + channels.length - 1) % channels.length;
+      const target = channels[channelIndex];
+      const index = target === "all" ? 0 : records.findIndex((record) => record.dataset.terminalChannel === target);
+      if (index >= 0) select(index, true);
+    });
+    $("[data-terminal-column-next]", node)?.addEventListener("click", () => {
+      channelIndex = (channelIndex + 1) % channels.length;
+      const target = channels[channelIndex];
+      const index = target === "all" ? 0 : records.findIndex((record) => record.dataset.terminalChannel === target);
+      if (index >= 0) select(index, true);
+    });
+    applySearch();
+    select(0);
+  },
+});
+
+/* ============================================================
+   视图：记忆导航
+   ============================================================ */
+async function loadPool() {
+  if (state.pool) return state.pool;
+  const result = await apiGet("/memories?scope=all&limit=200");
+  state.pool = Array.isArray(result.memories) ? result.memories : [];
+  return state.pool;
+}
+
+function invalidatePool() {
+  state.pool = null;
+}
+
+defineView("navigate", {
+  title: "记忆导航",
+  navLabel: "记忆导航",
+  eyebrow: "Library · Navigate",
+  hint: "按记忆归属进入：私聊、群聊、用户档案、Bot 个人、核心记忆与外部接口",
+  async load() {
+    await withBusy("正在读取记忆分布…", async () => {});
+    const [statsPayload, core, pool, buckets] = await Promise.all([
+      apiGet("/stats"),
+      apiTry(() => apiGet("/core-memory"), { blocks: [] }),
+      apiTry(loadPool, []),
+      apiTry(() => apiGet("/buckets?limit=160"), { buckets: [] }),
+    ]);
+    const statsData = (statsPayload && statsPayload.stats) || {};
+    const byScope = statsData.by_scope || {};
+    const personalCount = pool.filter((m) => compact(m.visibility) === "bot_self").length;
+    const externalCount = pool.filter((m) => {
+      const source = compact(m.source_plugin);
+      return source && source !== "self" && source !== "astrbot_plugin_memory_companion";
+    }).length;
+    const externalCapped = externalCount >= pool.length && pool.length >= 800;
+    const personalCapped = personalCount >= pool.length && pool.length >= 800;
+    return {
+      counts: {
+        private: int(byScope.private),
+        group: int(byScope.group),
+        profile: int(statsData.identities),
+        personal: int(personalCount),
+        core: int((core.blocks || []).length),
+        external: int(externalCount),
+      },
+      capped: { personal: personalCapped, external: externalCapped },
+      poolSize: pool.length,
+      buckets: Array.isArray(buckets.buckets) ? buckets.buckets : [],
+      pool,
+    };
+  },
+  render(data) {
+    const counts = data.counts || {};
+    const max = Math.max(1, ...Object.values(counts).map((v) => int(v)));
+
+    const scopes = [
+      { key: "private", meta: SCOPE_META.private, jump: "inspect", filter: "scope:private", exact: true },
+      { key: "group", meta: SCOPE_META.group, jump: "inspect", filter: "scope:group", exact: true },
+      { key: "profile", meta: SCOPE_META.profile, jump: "inspect", filter: "profile", exact: true },
+      { key: "personal", meta: SCOPE_META.personal, jump: "botlife", filter: "", exact: false },
+      { key: "core", meta: SCOPE_META.core, jump: "core", filter: "", exact: true },
+      { key: "external", meta: SCOPE_META.external, jump: "external", filter: "", exact: false },
+    ];
+
+    const cards = scopes
+      .map((item) => {
+        const count = int(counts[item.key]);
+        const capped = Boolean(data.capped && data.capped[item.key]);
+        const note = item.exact ? "精确统计" : capped ? "≥ " + fmtInt(count) + "（抽样下限）" : "基于 " + fmtInt(data.poolSize) + " 条抽样";
+        return (
+          '<button class="scope-card" type="button" data-tone="' + item.meta.tone + '" data-goto="' + item.jump + '" data-filter="' + esc(item.filter) + '">' +
+          '<div class="scope-top">' + icon(item.meta.icon, "scope-icon") +
+          '<span class="scope-count">' + fmtInt(count) + " 条</span></div>" +
+          '<div class="scope-body"><div class="scope-name">' + esc(item.meta.label) + "</div>" +
+          '<div class="scope-desc">' + esc(item.meta.desc) + "</div></div>" +
+          '<div class="scope-bar"><i style="width:' + ((count / max) * 100).toFixed(1) + '%"></i></div>' +
+          '<div class="scope-foot"><span>' + esc(note) + "</span>" +
+          "<span>进入 ›</span></div></button>"
+        );
+      })
+      .join("");
+
+    const recent = (data.buckets || [])
+      .slice()
+      .sort((a, b) => int(b.memory_count) - int(a.memory_count))
+      .slice(0, 10)
+      .map((bucket) => {
+        const scope = compact(bucket.scope);
+        const meta = SCOPE_META[scope] || { label: scope || "未分类", tone: "" };
+        return (
+          '<button class="row" type="button" data-goto="inspect" data-scope="' + esc(scope) + '" data-target="' + esc(compact(bucket.target_id)) + '">' +
+          '<div class="row-main"><div class="row-title">' + esc(compact(bucket.label) || compact(bucket.target_name) || compact(bucket.target_id) || "未命名窗口") + "</div>" +
+          '<div class="row-sub">' + esc(compact(bucket.target_kind) || "window") + " · " + esc(compact(bucket.sample_session_id) || "-") + "</div></div>" +
+          '<div class="row-meta">' + badge(meta.label, meta.tone) + badge(fmtInt(bucket.memory_count) + " 条") + "</div></button>"
+        );
+      })
+      .join("");
+
+    const typeBreakdown = {};
+    (data.pool || []).forEach((memory) => {
+      const key = compact(memory.memory_type) || "unknown";
+      typeBreakdown[key] = (typeBreakdown[key] || 0) + 1;
+    });
+    const typeRows = Object.entries(typeBreakdown)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map((entry) => meter(TYPE_LABEL[entry[0]] || entry[0], fmtInt(entry[1]), Math.max(1, data.pool.length)))
+      .join("");
+
+    const visBreakdown = {};
+    (data.pool || []).forEach((memory) => {
+      const key = compact(memory.visibility) || "unknown";
+      visBreakdown[key] = (visBreakdown[key] || 0) + 1;
+    });
+    const visRows = Object.entries(visBreakdown)
+      .sort((a, b) => b[1] - a[1])
+      .map((entry) => meter(VISIBILITY_LABEL[entry[0]] || entry[0], fmtInt(entry[1]), Math.max(1, data.pool.length)))
+      .join("");
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="section-label"><h2>记忆归属</h2><span class="section-note">点击任一范围进入对应检视视图</span></div>' +
+      '<div class="grid g3">' + cards + "</div>" +
+      '<div class="grid split-2">' +
+        card("最近活跃范围", (data.buckets || []).length + " 个窗口 · 按记忆量排序", '<div class="row-list">' + (recent || emptyState("暂无范围", "还没有可展示的记忆窗口。")) + "</div>") +
+        '<div style="display:grid;gap:16px">' +
+          card("记忆类型构成", "基于最近 " + fmtInt(data.poolSize) + " 条抽样", '<div style="display:grid;gap:9px">' + (typeRows || "—") + "</div>") +
+          card("可见性构成", "决定谁能读到这条记忆", '<div style="display:grid;gap:9px">' + (visRows || "—") + "</div>") +
+        "</div>" +
+      "</div>" +
+      "</div>"
+    );
+  },
+});
+
+/* ============================================================
+   视图：记忆检视
+   ============================================================ */
+defineView("inspect", {
+  title: "记忆检视",
+  navLabel: "记忆检视",
+  eyebrow: "Library · Inspect",
+  hint: "按范围、类型、可见性和生命周期筛选，逐条核对 46 项记忆参数",
+  async load(options) {
+    const opts = options || {};
+    if (opts.scope) state.filters.scope = opts.scope;
+    if (opts.target) state.filters.target = opts.target;
+    const filters = state.filters;
+    const params = ["limit=120"];
+    if (filters.scope) params.push("scope=" + encodeURIComponent(filters.scope));
+    if (filters.visibility) params.push("visibility=" + encodeURIComponent(filters.visibility));
+    if (filters.lifecycle) params.push("lifecycle=" + encodeURIComponent(filters.lifecycle));
+    if (filters.memoryType) params.push("memory_type=" + encodeURIComponent(filters.memoryType));
+    if (filters.q) params.push("q=" + encodeURIComponent(filters.q));
+    if (filters.ownerBot) params.push("owner_bot=" + encodeURIComponent(filters.ownerBot));
+    if (filters.target) {
+      if (filters.scope === "group") params.push("group_id=" + encodeURIComponent(filters.target));
+      else params.push("entity_id=" + encodeURIComponent(filters.target));
+    }
+    // 没有指定范围时用显式 scope=all，而不是让后端默认放开全量。
+    if (!filters.scope && !filters.target) params.push("scope=all");
+    const botsPayload = await apiTry(() => apiGet("/bots"), { bots: [], persona: "" });
+    const result = await apiGet("/memories?" + params.join("&"));
+    let memories = Array.isArray(result.memories) ? result.memories : [];
+    if (filters.scope === "profile") {
+      memories = memories.filter((m) => [
+        "profile", "user_profile", "user_habit",
+        "preference", "user_preference",
+        "relationship", "relationship_claim", "relationship_phase_summary",
+      ].includes(compact(m.memory_type)));
+    }
+    return { memories, filters, bots: Array.isArray(botsPayload.bots) ? botsPayload.bots : [], persona: botsPayload.persona || "" };
+  },
+  render(data) {
+    const filters = data.filters || {};
+    const memories = data.memories || [];
+
+    const scopePills = ["", "private", "group", "profile", "external"]
+      .map((key) => {
+        const label = key === "" ? "全部" : key === "external" ? "外部接口" : (SCOPE_META[key] ? SCOPE_META[key].label : key);
+        return '<button class="pill' + ((filters.scope || "") === key ? " is-active" : "") + '" type="button" data-filter-key="scope" data-filter-value="' + esc(key) + '">' + esc(label) + "</button>";
+      })
+      .join("");
+
+    const typePills = ["", "profile", "preference", "relationship", "fact", "event", "state", "promise", "schedule", "thought"]
+      .map((key) => {
+        const label = key === "" ? "全部类型" : TYPE_LABEL[key] || key;
+        return '<button class="pill' + ((filters.memoryType || "") === key ? " is-active" : "") + '" type="button" data-filter-key="memoryType" data-filter-value="' + esc(key) + '">' + esc(label) + "</button>";
+      })
+      .join("");
+
+    const visPills = ["", "public", "private", "group_shared", "bot_self", "restricted"]
+      .map((key) => {
+        const label = key === "" ? "全部可见性" : VISIBILITY_LABEL[key] || key;
+        return '<button class="pill' + ((filters.visibility || "") === key ? " is-active" : "") + '" type="button" data-filter-key="visibility" data-filter-value="' + esc(key) + '">' + esc(label) + "</button>";
+      })
+      .join("");
+
+    const lifePills = ["", "active", "stable", "fading", "archived", "expired"]
+      .map((key) => {
+        const label = key === "" ? "全部生命周期" : LIFECYCLE_LABEL[key] || key;
+        return '<button class="pill' + ((filters.lifecycle || "") === key ? " is-active" : "") + '" type="button" data-filter-key="lifecycle" data-filter-value="' + esc(key) + '">' + esc(label) + "</button>";
+      })
+      .join("");
+
+    const botPills = (data.bots || []).length
+      ? '<div class="pill-row">' +
+        '<button class="pill' + (!filters.ownerBot ? " is-active" : "") + '" type="button" data-filter-key="ownerBot" data-filter-value="">全部 Bot</button>' +
+        (data.bots || []).map((bot) => {
+          const key = compact(bot.id) || "__empty__";
+          const name = compact(bot.name) || compact(data.persona) || (compact(bot.id) ? "Bot " + bot.id : "未标记归属");
+          return '<button class="pill' + (filters.ownerBot === key ? " is-active" : "") + '" type="button" data-filter-key="ownerBot" data-filter-value="' + esc(key) + '">' + esc(name) + " · " + fmtInt(bot.count) + "</button>";
+        }).join("") +
+        "</div>"
+      : "";
+
+    const activeChips = [];
+    if (filters.q) activeChips.push("关键词：" + filters.q);
+    if (filters.target) activeChips.push("目标：" + filters.target);
+    if (filters.ownerBot) activeChips.push("Bot：" + (filters.ownerBot === "__empty__" ? "未标记归属" : filters.ownerBot));
+
+    const rows = memories.length
+      ? memories.map((memory, index) => memoryRow(memory, index)).join("")
+      : emptyState("没有匹配的记忆", "试着放宽筛选条件，或清空关键词后重新加载。");
+
+    return (
+      '<div class="grid" style="gap:14px">' +
+      '<section class="card is-tight">' +
+        (botPills ? '<div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-bottom:10px">' + botPills + "</div>" : "") +
+        '<div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center">' +
+          '<div class="pill-row">' + scopePills + "</div>" +
+        "</div>" +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:10px">' +
+          '<div class="pill-row">' + typePills + "</div>" +
+        "</div>" +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:10px">' +
+          '<div class="pill-row">' + visPills + "</div>" +
+          '<div class="pill-row">' + lifePills + "</div>" +
+        "</div>" +
+        '<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">' +
+          '<input id="inspectQuery" type="search" placeholder="按内容或证据过滤" value="' + esc(filters.q || "") + '" style="flex:1;min-width:200px;height:32px;padding:0 12px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2);color:var(--text);font-size:12.5px;outline:none" />' +
+          '<button class="btn is-sm" type="button" id="applyQueryBtn">应用</button>' +
+          '<button class="btn is-sm is-ghost" type="button" id="clearFiltersBtn">清空筛选</button>' +
+          '<span style="margin-left:auto;font-size:11.5px;color:var(--text-3)">' + fmtInt(memories.length) + " 条" + (activeChips.length ? " · " + esc(activeChips.join(" · ")) : "") + "</span>" +
+        "</div>" +
+      "</section>" +
+      '<div class="row-list" id="inspectList">' + rows + "</div>" +
+      "</div>"
+    );
+  },
+  mount(node) {
+    $$("[data-filter-key]", node).forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.filterKey;
+        const value = button.dataset.filterValue;
+        state.filters[key] = value;
+        if (key === "scope") state.filters.target = "";
+        go("inspect");
+      });
+    });
+    const applyBtn = $("#applyQueryBtn", node);
+    if (applyBtn) {
+      applyBtn.addEventListener("click", () => {
+        state.filters.q = $("#inspectQuery", node).value.trim();
+        go("inspect");
+      });
+      $("#inspectQuery", node).addEventListener("keydown", (event) => {
+        if (event.key === "Enter") applyBtn.click();
+      });
+    }
+    const clearBtn = $("#clearFiltersBtn", node);
+    if (clearBtn) {
+      clearBtn.addEventListener("click", () => {
+        state.filters = { scope: "", q: "", visibility: "", lifecycle: "", memoryType: "", target: "" };
+        go("inspect");
+      });
+    }
+    $$("[data-memory]", node).forEach((row) => {
+      row.addEventListener("click", () => openMemory(row.dataset.memory));
+    });
+  },
+});
+
+/* ============================================================
+   视图：核心记忆
+   ============================================================ */
+const CORE_KINDS = { rule: "规则", boundary: "边界", preference: "偏好", profile: "画像", fact: "事实", state: "稳定状态" };
+const CORE_SCOPES = { global: "全局 / Bot", private: "私聊用户", group: "群聊" };
+
+defineView("core", {
+  title: "核心记忆",
+  navLabel: "核心记忆",
+  eyebrow: "Library · Core",
+  hint: "始终参与注入的稳定事实、规则与边界，按作用域与优先级排序",
+  async load() {
+    const result = await apiTry(() => apiGet("/core-memory"), { blocks: [] });
+    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    blocks.sort((a, b) => int(b.priority) - int(a.priority));
+    return { blocks };
+  },
+  render(data) {
+    const blocks = data.blocks || [];
+    const rows = blocks.length
+      ? blocks
+          .map(
+            (block) =>
+              '<button class="row" type="button" data-core="' + esc(block.id) + '">' +
+              '<div class="row-main"><div class="row-title">' + esc(compact(block.label) || "未命名块") + "</div>" +
+              '<div class="row-sub">' + esc(clip(compact(block.content), 84)) + "</div></div>" +
+              '<div class="row-meta">' +
+                badge(CORE_KINDS[compact(block.kind)] || compact(block.kind) || "事实", "gold") +
+                badge(CORE_SCOPES[compact(block.scope)] || compact(block.scope) || "全局", "fact") +
+                badge("P" + int(block.priority), "accent") +
+                (block.enabled ? "" : badge("已停用", "warn")) +
+              "</div></button>"
+          )
+          .join("")
+      : emptyState("还没有核心记忆块", "核心记忆会在每次对话时优先注入，适合放稳定的人设规则与长期事实。");
+
+    const form =
+      '<form id="coreForm" class="config-form" autocomplete="off">' +
+      '<input type="hidden" name="id" id="coreId" />' +
+      '<input type="hidden" name="expected_revision" id="coreRevision" value="0" />' +
+      '<div class="grid g3" style="gap:10px">' +
+        '<label class="field"><span>Label</span><input name="label" id="coreLabel" type="text" maxlength="80" placeholder="例如 preferred_address" required /></label>' +
+        '<label class="field"><span>类型</span><select name="kind" id="coreKind">' + Object.keys(CORE_KINDS).map((k) => '<option value="' + k + '">' + CORE_KINDS[k] + "</option>").join("") + "</select></label>" +
+        '<label class="field"><span>作用域</span><select name="scope" id="coreScope">' + Object.keys(CORE_SCOPES).map((k) => '<option value="' + k + '">' + CORE_SCOPES[k] + "</option>").join("") + "</select></label>" +
+        '<label class="field"><span>目标 ID</span><input name="target_id" id="coreTarget" type="text" maxlength="160" placeholder="私聊用户或群聊 ID" /></label>' +
+        '<label class="field"><span>Bot ID</span><input name="bot_id" id="coreBot" type="text" maxlength="120" placeholder="留空表示全部 Bot" /></label>' +
+        '<label class="field"><span>人格 ID</span><input name="persona_id" id="corePersona" type="text" maxlength="120" placeholder="留空表示全部人格" /></label>' +
+      "</div>" +
+      '<label class="field"><span>内容</span><textarea name="content" id="coreContent" rows="4" maxlength="4000" placeholder="要长期记住的内容" required></textarea></label>' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<label class="field is-inline" style="width:auto"><span>优先级</span><input name="priority" id="corePriority" type="number" min="0" max="100" step="1" value="50" style="width:88px" /></label>' +
+        '<label class="switch"><input type="checkbox" id="coreEnabled" checked /><span class="switch-track"></span><span>启用注入</span></label>' +
+        '<div class="pill-row" style="margin-left:auto">' +
+          '<button class="btn is-sm is-danger" type="button" id="coreDeleteBtn" disabled>删除此块</button>' +
+          '<button class="btn is-sm is-ghost" type="button" id="coreResetBtn">重置</button>' +
+          '<button class="btn is-sm is-primary" type="submit">保存核心块</button>' +
+        "</div>" +
+      "</div>" +
+      "</form>";
+
+    return (
+      '<div class="grid split-2">' +
+        card(
+          "核心记忆块",
+          (data.blocks || []).length + " 个 · 按优先级排序",
+          '<div class="row-actions" style="margin-bottom:10px">' +
+            '<button class="btn is-sm" type="button" id="coreExtractBtn">从记忆提炼核心块</button>' +
+            '<span class="cf-desc" style="margin-left:8px">按私聊 / 群聊 / 档案 / 全局汇总最稳定的事实</span>' +
+          "</div>" +
+          '<div class="row-list">' + rows + "</div>"
+        ) +
+        card("编辑核心块", "留空 ID 表示新建", form) +
+      "</div>"
+    );
+  },
+  mount(node, data) {
+    const blocks = (data.blocks || []).reduce((acc, block) => {
+      acc[block.id] = block;
+      return acc;
+    }, {});
+
+    const fill = (block) => {
+      $("#coreId", node).value = block ? compact(block.id) : "";
+      $("#coreRevision", node).value = block ? int(block.revision) : 0;
+      $("#coreLabel", node).value = block ? compact(block.label) : "";
+      $("#coreKind", node).value = block ? compact(block.kind) || "fact" : "fact";
+      $("#coreScope", node).value = block ? compact(block.scope) || "global" : "global";
+      $("#coreTarget", node).value = block ? compact(block.target_id) : "";
+      $("#coreBot", node).value = block ? compact(block.bot_id) : "";
+      $("#corePersona", node).value = block ? compact(block.persona_id) : "";
+      $("#coreContent", node).value = block ? compact(block.content) : "";
+      $("#corePriority", node).value = block ? int(block.priority) : 50;
+      $("#coreEnabled", node).checked = block ? block.enabled !== false : true;
+      const deleteBtn = $("#coreDeleteBtn", node);
+      if (deleteBtn) deleteBtn.disabled = !block;
+    };
+
+    $$("[data-core]", node).forEach((row) => {
+      row.addEventListener("click", () => fill(blocks[row.dataset.core]));
+    });
+
+    $("#coreResetBtn", node).addEventListener("click", () => fill(null));
+    $("#coreDeleteBtn", node).addEventListener("click", async () => {
+      const id = $("#coreId", node).value.trim();
+      if (!id) {
+        toast("先选中一个核心记忆块", "warn");
+        return;
+      }
+      const confirmed = await showInlineConfirmation("删除核心记忆块", "删除后该块不再参与注入，且不可恢复。确定删除？", "删除");
+      if (!confirmed) return;
+      await withBusy("正在删除…", async () => {
+        const result = await apiPost("/core-memory/delete", { id: id });
+        if (result && result.ok === false) {
+          toast("删除失败：" + (result.code || "未知原因"), "error");
+          return;
+        }
+        invalidatePool();
+        toast("核心记忆块已删除", "ok");
+        fill(null);
+        refresh();
+      }, 3000);
+    });
+
+    $("#coreForm", node).addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const payload = {
+        id: $("#coreId", node).value.trim(),
+        expected_revision: int($("#coreRevision", node).value),
+        label: $("#coreLabel", node).value.trim(),
+        kind: $("#coreKind", node).value,
+        scope: $("#coreScope", node).value,
+        target_id: $("#coreTarget", node).value.trim(),
+        bot_id: $("#coreBot", node).value.trim(),
+        persona_id: $("#corePersona", node).value.trim(),
+        content: $("#coreContent", node).value.trim(),
+        priority: int($("#corePriority", node).value),
+        enabled: $("#coreEnabled", node).checked,
+      };
+      if (!payload.label || !payload.content) {
+        toast("Label 与内容都不能为空", "error");
+        return;
+      }
+      await withBusy("正在保存…", async () => {
+        const result = await apiPost("/core-memory/upsert", payload);
+        if (result && result.ok === false) {
+          toast("保存失败：" + (result.code || "未知原因"), "error");
+          return;
+        }
+        invalidatePool();
+        toast("核心记忆已保存", "ok");
+        fill(null);
+        refresh();
+      });
+    });
+
+    const extractBtn = $("#coreExtractBtn", node);
+    if (extractBtn) {
+      extractBtn.addEventListener("click", async () => {
+        extractBtn.disabled = true;
+        try {
+          const pool = await apiGet("/memories?scope=all&limit=200");
+          const list = Array.isArray(pool.memories) ? pool.memories : [];
+          if (!list.length) {
+            toast("还没有记忆可提炼，先聊几轮或导入历史", "warn");
+            return;
+          }
+          const buckets = { private: [], group: [], profile: [], global: [] };
+          list.forEach((memory) => {
+            const key = compact(memory.scope) || "global";
+            (buckets[key] || buckets.global).push(memory);
+          });
+          const labels = { private: "私聊稳定事实", group: "群聊稳定事实", profile: "用户档案要点", global: "全局规则与偏好" };
+          const candidates = Object.keys(labels)
+            .map((scope) => {
+              const items = buckets[scope] || [];
+              if (!items.length) return null;
+              const facts = [];
+              items
+                .slice()
+                .sort((a, b) => (Number(b.salience) || 0) - (Number(a.salience) || 0))
+                .forEach((memory) => {
+                  const keyFacts = Array.isArray(memory.key_facts) ? memory.key_facts : [];
+                  if (keyFacts.length) {
+                    keyFacts.forEach((fact) => {
+                      if (compact(fact)) facts.push(compact(fact));
+                    });
+                  } else if (compact(memory.content)) {
+                    facts.push(clip(compact(memory.content), 60));
+                  }
+                });
+              const unique = Array.from(new Set(facts.filter(Boolean))).slice(0, 8);
+              if (!unique.length) return null;
+              return {
+                label: labels[scope],
+                kind: "fact",
+                scope: scope === "profile" ? "global" : scope,
+                priority: 60,
+                content: unique.join("；"),
+                enabled: true,
+              };
+            })
+            .filter(Boolean);
+          if (!candidates.length) {
+            toast("没提炼出可用的事实", "warn");
+            return;
+          }
+          const previewText = candidates.map((item) => item.label + "：" + clip(item.content, 46)).join("；");
+          const confirmed = await showInlineConfirmation(
+            "从记忆提炼核心块",
+            "将生成 " + candidates.length + " 个核心块，可在列表里再改或删。" + previewText,
+            "写入 " + candidates.length + " 个"
+          );
+          if (!confirmed) return;
+          await withBusy("正在写入…", async () => {
+            let done = 0;
+            for (const candidate of candidates) {
+              const result = await apiPost("/core-memory/upsert", candidate);
+              if (result && result.ok !== false) done += 1;
+            }
+            invalidatePool();
+            toast("已写入 " + done + " 个核心块", done ? "ok" : "warn");
+            refresh();
+          }, 900);
+        } catch (error) {
+          toast("提炼失败：" + (error.message || error), "error");
+        } finally {
+          extractBtn.disabled = false;
+        }
+      });
+    }
+  },
+});
+
+/* ============================================================
+   视图：Bot 日程与相册
+   ============================================================ */
+let botLifeDate = "";
+
+defineView("botlife", {
+  title: "Bot 日程与相册",
+  navLabel: "Bot 日程与相册",
+  eyebrow: "Library · Bot Self",
+  hint: "Bot 自己的一天：日程安排、每日状态、相册、主观记忆与细化片段",
+  async load(options) {
+    const opts = options || {};
+    if (opts.date) botLifeDate = opts.date;
+    const params = botLifeDate ? "?date=" + encodeURIComponent(botLifeDate) + "&limit=80" : "?limit=80";
+    const result = await apiTry(() => apiGet("/companion/personal-memory" + params), { available: false });
+    if (result.available === false) {
+      const caps = await apiTry(() => apiGet("/capabilities/bot-personal"), null);
+      return { available: false, reason: compact(result.reason) || "未检测到主动陪伴插件", caps };
+    }
+    if (result.selected_date) botLifeDate = result.selected_date;
+    return Object.assign({ available: true }, result);
+  },
+  render(data) {
+    if (!data.available) {
+      return (
+        '<div class="grid g3">' +
+        card(
+          "Bot 个人记忆不可用",
+          "需要主动陪伴插件",
+          emptyState("未检测到陪伴插件", compact(data.reason) || "安装并启用 astrbot_plugin_private_companion 后，这里会显示 Bot 的日程、相册与主观记忆。")
+        ) +
+        "</div>"
+      );
+    }
+    const snap = data.snapshot || {};
+    const plan = snap.plan || {};
+    const items = Array.isArray(plan.items) ? plan.items : [];
+    const current = snap.current_item || {};
+    const dailyState = snap.daily_state || {};
+    const album = Array.isArray(snap.album) ? snap.album : [];
+    const subjective = Array.isArray(snap.subjective_memories) ? snap.subjective_memories : [];
+    const details = Array.isArray(snap.details) ? snap.details : [];
+    const dates = Array.isArray(data.dates) ? data.dates : [];
+
+    const datePills = dates
+      .slice(0, 14)
+      .map((d) => '<button class="pill' + (d === data.selected_date ? " is-active" : "") + '" type="button" data-date="' + esc(d) + '">' + esc(fmtDate(d)) + "</button>")
+      .join("");
+
+    const schedule = items.length
+      ? '<div class="schedule-list">' +
+        items
+          .map((item) => {
+            const isNow = compact(item.time) && compact(current.time) === compact(item.time);
+            return (
+              '<div class="schedule-item' + (isNow ? " is-now" : "") + '">' +
+              '<div class="schedule-time">' + esc(compact(item.time) || "--:--") + "</div>" +
+              "<div><div class=\"schedule-title\">" + esc(compact(item.activity) || "未安排") +
+              (compact(item.mood) ? " · " + esc(item.mood) : "") + "</div>" +
+              (compact(item.message_seed) ? '<div class="schedule-note">' + esc(clip(item.message_seed, 80)) + "</div>" : "") +
+              "</div></div>"
+            );
+          })
+          .join("") +
+        "</div>"
+      : emptyState("这一天还没有日程", "陪伴插件未生成当日计划，或该日期尚无记录。");
+
+    const stateRows = [
+      ["日期", compact(dailyState.date) || data.selected_date],
+      ["精力", compact(dailyState.energy)],
+      ["心情倾向", compact(dailyState.mood_bias)],
+      ["睡眠", compact(dailyState.sleep)],
+      ["天气", compact(dailyState.weather)],
+      ["备注", compact(dailyState.note)],
+    ].filter((row) => row[1]);
+
+    const albumHtml = album.length
+      ? '<div class="album-grid">' +
+        album
+          .map(
+            (photo) =>
+              photo.exists
+                ? '<figure class="album-shot" data-cap="' + esc(compact(photo.title) + " · " + compact(photo.generated_at)) + '" style="margin:0">' +
+                  '<img src="' + TRANSPARENT_IMAGE + '" data-album-image-src="' + esc(compact(photo.image_data_url) || compact(photo.url)) + '" alt="' + esc(compact(photo.title)) + '" loading="lazy" />' +
+                  '<figcaption class="shot-cap"><b>' + esc(compact(photo.title)) + "</b><span>" + esc(compact(photo.generated_at) || compact(photo.date)) + "</span></figcaption></figure>"
+                : '<div class="album-shot is-missing">' + esc(compact(photo.error) || "图片不可用") + "</div>"
+          )
+          .join("") +
+        "</div>"
+      : emptyState("相册还是空的", "Bot 生成每日穿搭图或生活分享图后，会出现在这里。");
+
+    const subjectiveHtml = subjective.length
+      ? '<div class="row-list">' +
+        subjective
+          .map(
+            (item) =>
+              '<div class="row" style="cursor:default;align-items:flex-start"><div class="row-main">' +
+              '<div class="row-title">' + esc(compact(item.summary) || "主观记忆") + "</div>" +
+              '<div class="row-sub" style="white-space:normal">' + esc(clip(compact(item.body), 150)) + "</div>" +
+              (Array.isArray(item.tags) && item.tags.length ? '<div class="tag-row" style="margin-top:6px">' + item.tags.map((tag) => badge(tag, "personal")).join("") + "</div>" : "") +
+              "</div></div>"
+          )
+          .join("") +
+        "</div>"
+      : emptyState("暂无主观记忆", "Bot 的日记与梦境碎片会汇总在这里。");
+
+    const detailsHtml = details.length
+      ? '<div class="row-list">' +
+        details
+          .map(
+            (item) =>
+              '<div class="row" style="cursor:default;align-items:flex-start"><div class="row-main">' +
+              '<div class="row-title">' + esc(compact(item.time) || compact(item.key) || "片段") + " · " + esc(compact(item.status) || "进行中") + "</div>" +
+              '<div class="row-sub" style="white-space:normal">' + esc(clip(compact(item.summary) || (item.today_events || []).join(" / "), 150)) + "</div>" +
+              "</div></div>"
+          )
+          .join("") +
+        "</div>"
+      : emptyState("暂无细化片段", "启用陪伴插件的细化增强后，会按时间段记录 Bot 的具体经历。");
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="section-label"><h2>' + esc(compact(snap.bot_name) || "Bot") + " 的这一天</h2>" +
+        '<span class="section-note">' + esc(compact(data.selected_date) || "") + (compact(plan.source) ? " · 来源 " + compact(plan.source) : "") + "</span></div>" +
+      '<div class="pill-row">' + (datePills || '<span class="badge">仅此一天</span>') + "</div>" +
+      '<div class="grid split-2">' +
+        card("当日日程", items.length + " 个时段" + (compact(current.activity) ? " · 当前：" + compact(current.activity) : ""), schedule) +
+        '<div style="display:grid;gap:16px">' +
+          card("每日状态", "Bot 自身状态快照", stateRows.length ? '<dl class="kv">' + stateRows.map((row) => "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>").join("") + "</dl>" : emptyState("暂无状态", "陪伴插件尚未写入当日状态。")) +
+          card("相册", album.length + " 张", albumHtml) +
+        "</div>" +
+      "</div>" +
+      '<div class="grid g2">' +
+        card("主观记忆", "日记 · 梦境 · 感受", subjectiveHtml) +
+        card("细化片段", details.length + " 段", detailsHtml) +
+      "</div>" +
+      "</div>"
+    );
+  },
+  mount(node) {
+    hydratePersonalAlbumImages(node);
+    $$("[data-date]", node).forEach((button) => {
+      button.addEventListener("click", () => go("botlife", { date: button.dataset.date }));
+    });
+    $$(".album-shot:not(.is-missing)", node).forEach((figure) => {
+      figure.addEventListener("click", () => {
+        const image = $("img", figure);
+        const source = image && image.dataset.loaded === "1" ? image.currentSrc || image.src : "";
+        if (source) openLightbox(source, figure.dataset.cap);
+      });
+    });
+  },
+});
+
+function albumImageDataPath(source) {
+  const raw = String(source || "");
+  if (!raw || raw.startsWith("data:")) return raw;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.pathname.endsWith("/companion/personal-photo-data")) return "/companion/personal-photo-data" + url.search;
+    if (url.pathname.endsWith("/companion/personal-photo")) return "/companion/personal-photo-data" + url.search;
+  } catch (error) {
+    const marker = "/companion/personal-photo";
+    const index = raw.indexOf(marker);
+    if (index >= 0) return "/companion/personal-photo-data" + raw.slice(index + marker.length);
+  }
+  return raw;
+}
+
+async function hydratePersonalAlbumImages(root) {
+  const images = $$("img[data-album-image-src]", root);
+  await Promise.all(images.map(async (img) => {
+    const source = img.dataset.albumImageSrc || "";
+    if (!source || img.dataset.loaded === "1") return;
+    img.dataset.loading = "1";
+    try {
+      const endpoint = albumImageDataPath(source);
+      if (endpoint.startsWith("data:")) {
+        img.src = endpoint;
+      } else if (endpoint.startsWith("/companion/personal-photo-data")) {
+        const result = await apiGet(endpoint);
+        if (!result || !result.data_url) throw new Error("图片数据为空");
+        img.src = result.data_url;
+      } else {
+        img.src = source;
+      }
+      img.dataset.loaded = "1";
+    } catch (error) {
+      img.dataset.loaded = "0";
+      const fallback = document.createElement("div");
+      fallback.className = "album-photo-error";
+      fallback.textContent = "图片加载失败";
+      const figure = img.closest(".album-shot");
+      if (figure) figure.classList.add("is-missing");
+      img.replaceWith(fallback);
+    } finally {
+      img.dataset.loading = "0";
+    }
+  }));
+}
+
+function openLightbox(src, caption) {
+  const box = document.createElement("div");
+  box.className = "lightbox";
+  box.innerHTML = '<img src="' + esc(src) + '" alt="" /><div class="lightbox-cap">' + esc(caption || "") + "</div>";
+  box.addEventListener("click", () => box.remove());
+  document.body.appendChild(box);
+}
+
+/* ============================================================
+   知识星图 · 星系模型
+   中央恒星 = 选中的核心记忆；卫星 = 关联记忆，按关联强度落在
+   内 / 中 / 外三条星轨上，带透视与流动尾迹。
+   ============================================================ */
+const ORBIT_TIERS = [
+  { key: "inner", label: "内轨 · 强关联", ratio: 0.34, speed: 4.0, color: "#a99bff" },
+  { key: "mid", label: "中轨 · 相关", ratio: 0.56, speed: 2.6, color: "#7c6cf0" },
+  { key: "outer", label: "外轨 · 弱相关", ratio: 0.79, speed: 1.7, color: "#4c5a7a" },
+];
+
+const TYPE_COLORS = {
+  profile: "#f472b6",
+  preference: "#f472b6",
+  relationship: "#f472b6",
+  fact: "#60a5fa",
+  state: "#60a5fa",
+  event: "#2dd4bf",
+  action: "#2dd4bf",
+  image_action: "#fb923c",
+  schedule: "#fb923c",
+  promise: "#fcd34d",
+  emotion: "#f87171",
+  thought: "#a99bff",
+};
+
+function satelliteColor(memory) {
+  const source = compact(memory.source_plugin);
+  if (source && source !== "self" && source !== "astrbot_plugin_memory_companion") return "#7dd3fc";
+  return TYPE_COLORS[compact(memory.memory_type)] || "#a99bff";
+}
+
+function typeLabel(memory) {
+  const type = compact(memory.memory_type);
+  return TYPE_LABEL[type] || type || "记忆";
+}
+
+function memoryTimestamp(memory) {
+  const value = compact(memory.occurred_at) || compact(memory.created_at) || compact(memory.updated_at);
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function relationScore(center, other) {
+  if (!center || !other || center.id === other.id) return 0;
+  let score = 0;
+  const centerTags = new Set((Array.isArray(center.tags) ? center.tags : []).map((t) => compact(t)).filter(Boolean));
+  const otherTags = Array.isArray(other.tags) ? other.tags : [];
+  const sharedTags = otherTags.filter((tag) => centerTags.has(compact(tag)));
+  score += Math.min(3, sharedTags.length) * 0.22;
+
+  const centerSubject = compact(center.subject && center.subject.id);
+  const otherSubject = compact(other.subject && other.subject.id);
+  if (centerSubject && centerSubject === otherSubject) score += 0.3;
+
+  const centerSession = compact(center.session_id);
+  if (centerSession && centerSession === compact(other.session_id)) score += 0.2;
+  const centerGroup = compact(center.group_id);
+  if (centerGroup && centerGroup === compact(other.group_id)) score += 0.16;
+
+  if (compact(center.scope) === compact(other.scope)) score += 0.1;
+  if (compact(center.memory_type) === compact(other.memory_type)) score += 0.08;
+
+  const batch = compact(center.import_batch_id);
+  if (batch && batch === compact(other.import_batch_id)) score += 0.18;
+
+  const ct = memoryTimestamp(center);
+  const ot = memoryTimestamp(other);
+  if (ct && ot) {
+    const days = Math.abs(ct - ot) / 86400000;
+    if (days <= 1) score += 0.16;
+    else if (days <= 7) score += 0.1;
+    else if (days <= 30) score += 0.05;
+  }
+  return clamp(score, 0, 1);
+}
+
+
+
+function hexAlpha(hex, alpha) {
+  const value = compact(hex).replace("#", "");
+  const full = value.length === 3 ? value.split("").map((c) => c + c).join("") : value;
+  const r = parseInt(full.slice(0, 2), 16) || 0;
+  const g = parseInt(full.slice(2, 4), 16) || 0;
+  const b = parseInt(full.slice(4, 6), 16) || 0;
+  return "rgba(" + r + "," + g + "," + b + "," + clamp(alpha, 0, 1).toFixed(3) + ")";
+}
+
+
+
+
+
+
+/* ============================================================
+   视图：记忆显微镜
+   ============================================================ */
+const microState = { query: "", scope: "all", userId: "", groupId: "", topK: 8 };
+let microResult = null;
+
+function jsonPreview(value, maxDepth) {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    return text.length > 4200 ? text.slice(0, 4200) + "\n…（已截断）" : text;
+  } catch (error) {
+    return String(value);
+  }
+}
+
+defineView("microscope", {
+  title: "记忆显微镜",
+  navLabel: "记忆显微镜",
+  eyebrow: "Insight · Microscope",
+  hint: "模拟一次真实召回：看哪些记忆被选中、拿到多少分，以及哪些被过滤掉",
+  async load() {
+    return { result: microResult, form: microState };
+  },
+  render(data) {
+    const form = data.form || microState;
+    const result = data.result;
+
+    const queryPanel =
+      '<div class="config-form">' +
+      '<label class="field"><span>模拟提问</span><textarea id="microQuery" rows="4" placeholder="例如：你最近写了什么 / 那个蓝色渐变小猪是什么">' +
+      esc(form.query) + "</textarea></label>" +
+      '<label class="field"><span>检索范围</span><select id="microScope">' +
+        [["all", "全部可检索记忆（管理检索）"], ["private", "指定私聊窗口"], ["group", "指定群聊窗口"]]
+          .map((row) => '<option value="' + row[0] + '"' + (form.scope === row[0] ? " selected" : "") + ">" + row[1] + "</option>")
+          .join("") +
+      "</select></label>" +
+      '<label class="field is-inline"><span>用户 ID</span><input id="microUser" type="text" value="' + esc(form.userId) + '" placeholder="私聊时填写" /></label>' +
+      '<label class="field is-inline"><span>群 ID</span><input id="microGroup" type="text" value="' + esc(form.groupId) + '" placeholder="群聊时填写" /></label>' +
+      '<label class="field is-inline"><span>召回条数</span><input id="microTopK" type="number" min="1" max="50" value="' + int(form.topK || 8) + '" /></label>' +
+      '<div class="pill-row"><button class="btn is-primary" type="button" id="microRunBtn">开始检索</button>' +
+      '<button class="btn is-ghost" type="button" id="microClearBtn">清空结果</button></div>' +
+      "</div>";
+
+    let hits = emptyState("还没有检索结果", "输入一句模拟提问，看看记忆库会召回什么。");
+    let blocked = emptyState("暂无过滤记录", "召回过程中被 ACL、作用域或策略拦截的记忆会列在这里。");
+    let retrieval = "";
+
+    if (result) {
+      const rows = Array.isArray(result.results) ? result.results : [];
+      hits = rows.length
+        ? rows
+            .map((memory, index) => {
+              const tone = memoryTone(memory);
+              return (
+                '<button class="hit" type="button" data-memory="' + esc(memory.id) + '" data-rank="' + (index + 1) + '">' +
+                '<span class="hit-rank">' + (index + 1) + "</span>" +
+                '<span class="hit-main"><span class="hit-content">' + esc(clip(memoryTitle(memory), 110)) + "</span>" +
+                '<span class="hit-meta">' +
+                  badge(typeLabel(memory), tone || "fact") +
+                  badge(VISIBILITY_LABEL[compact(memory.visibility)] || compact(memory.visibility) || "-") +
+                  (compact(memory.reason) ? badge(clip(memory.reason, 24)) : "") +
+                  '<span class="hit-score">' + num(memory.score) + "</span>" +
+                "</span></span></button>"
+              );
+            })
+            .join("")
+        : emptyState("没有召回任何记忆", "这句话没有命中记忆库，可以换个说法或放宽范围再试。");
+
+      const blockedRows = Array.isArray(result.blocked) ? result.blocked : [];
+      blocked = blockedRows.length
+        ? blockedRows
+            .slice(0, 12)
+            .map((item) => {
+              const text =
+                typeof item === "string"
+                  ? item
+                  : compact(item.reason) || compact(item.memory_type) || jsonPreview(item);
+              const title =
+                typeof item === "object" && item !== null
+                  ? clip(compact(item.content) || compact(item.title) || compact(item.id), 60)
+                  : "";
+              return '<div class="block-row"><span>' + esc(text) + (title ? "<br /><b>" + esc(title) + "</b>" : "") + "</span></div>";
+            })
+            .join("")
+        : emptyState("没有过滤记录", "本次召回没有记忆被拦截。");
+
+      const info = result.retrieval || {};
+      const slotCounts = info.slot_counts || {};
+      retrieval =
+        '<dl class="kv" style="margin-bottom:10px">' +
+        "<dt>检索模式</dt><dd>" + esc(compact((result.search_context || {}).mode) || "-") + "</dd>" +
+        "<dt>编排</dt><dd>" + (info.orchestration_enabled ? "已启用" : "未启用") + "</dd>" +
+        "<dt>Top K</dt><dd>" + int(info.top_k) + "</dd>" +
+        "<dt>命中</dt><dd>" + ((result.results || []).length) + " 条</dd>" +
+        "</dl>" +
+        (Object.keys(slotCounts).length
+          ? '<div class="tag-row">' + Object.keys(slotCounts).map((slot) => badge(slot + " " + int(slotCounts[slot]), "accent")).join("") + "</div>"
+          : "") +
+        ((info.capped_slots || []).length
+          ? '<div class="tag-row" style="margin-top:6px">' + info.capped_slots.map((slot) => badge("受限 " + slot, "warn")).join("") + "</div>"
+          : "");
+    }
+
+    return (
+      '<div class="micro-grid">' +
+      card("召回测试", "模拟一次真实提问", queryPanel + (retrieval ? '<div style="margin-top:14px">' + retrieval + "</div>" : "")) +
+      card("命中记忆", result ? (result.results || []).length + " 条" : "待运行", '<div class="row-list">' + hits + "</div>") +
+      card("过滤原因", "被拦截的记忆", '<div style="display:grid;gap:6px">' + blocked + "</div>") +
+      "</div>"
+    );
+  },
+  mount(node) {
+    const run = async () => {
+      microState.query = $("#microQuery", node).value.trim();
+      microState.scope = $("#microScope", node).value;
+      microState.userId = $("#microUser", node).value.trim();
+      microState.groupId = $("#microGroup", node).value.trim();
+      microState.topK = int($("#microTopK", node).value) || 8;
+      if (!microState.query) {
+        toast("请先输入一句模拟提问", "error");
+        return;
+      }
+      await withBusy("正在召回…", async () => {
+        microResult = await apiPost("/search", {
+          query: microState.query,
+          scope: microState.scope === "all" ? "unknown" : microState.scope,
+          user_id: microState.userId,
+          group_id: microState.groupId,
+          top_k: microState.topK,
+          context_mode: microState.scope === "all" ? "all" : "session",
+        });
+        toast("召回完成", "ok");
+        go("microscope");
+      });
+    };
+    $("#microRunBtn", node).addEventListener("click", run);
+    $("#microClearBtn", node).addEventListener("click", () => {
+      microResult = null;
+      go("microscope");
+    });
+    $$("[data-memory]", node).forEach((row) => {
+      row.addEventListener("click", () => openMemory(row.dataset.memory));
+    });
+  },
+});
+
+/* ============================================================
+   视图：互动协同
+   ============================================================ */
+defineView("synergy", {
+  title: "互动协同",
+  navLabel: "互动协同",
+  eyebrow: "Insight · Synergy",
+  hint: "表达权威归属、记忆触动趋势与情绪连续性 —— 只读，由陪伴插件主导",
+  async load() {
+    const [persona, coord] = await Promise.all([
+      apiTry(() => apiGet("/persona-state"), null),
+      apiTry(() => apiGet("/coordination/status"), { status: {} }),
+    ]);
+    return { persona, coord: (coord && coord.status) || {} };
+  },
+  render(data) {
+    const persona = data.persona;
+    if (!persona) {
+      return card("互动协同不可用", "读取失败", emptyState("无法读取互动协同数据", "请确认插件运行正常后重试。"));
+    }
+    const expr = persona.expression_coordination || {};
+    const trends = Array.isArray(persona.memory_touch_trends) ? persona.memory_touch_trends : [];
+    const events = Array.isArray(persona.memory_touch_events) ? persona.memory_touch_events : [];
+    const cross = persona.cross_window_emotional_state || {};
+    const legacyLabels = persona.legacy_context_labels || {};
+    const todLabels = persona.time_of_day_labels || {};
+
+    const authority =
+      '<dl class="kv">' +
+      "<dt>契约</dt><dd>" + esc(compact(expr.contract) || "-") + "</dd>" +
+      "<dt>模式</dt><dd>" + esc(compact(expr.mode) || "-") + "</dd>" +
+      "<dt>表达权威</dt><dd>" + badge(compact(expr.expression_authority) || "-", "accent") + "</dd>" +
+      "<dt>记忆角色</dt><dd>" + esc(compact(expr.memory_role) || "-") + "</dd>" +
+      "<dt>是否持久化</dt><dd>" + (expr.persistent ? "是" : "否（请求级只读）") + "</dd>" +
+      "</dl>";
+
+    const trendRows = trends.length
+      ? trends
+          .slice(0, 10)
+          .map((item) => {
+            const tone = item.trend_band === "rising" ? "ok" : item.trend_band === "cooling" ? "warn" : "";
+            const bandLabel = item.trend_band === "rising" ? "升温" : item.trend_band === "cooling" ? "降温" : "平稳";
+            return (
+              '<button class="row" type="button" style="cursor:default">' +
+              '<div class="row-main"><div class="row-title">' + esc(clip(compact(item.session_label), 46)) + "</div>" +
+              '<div class="row-sub">' + esc(legacyLabels[compact(item.legacy_context)] || compact(item.legacy_context) || "未定阶段") +
+              " · 触动 " + int(item.touch_count) + " 次</div></div>" +
+              '<div class="row-meta">' + badge(bandLabel, tone) + badge(fmtTime(item.updated_at)) + "</div></button>"
+            );
+          })
+          .join("")
+      : emptyState("暂无触动趋势", "还没有记录到记忆被表达层触动的趋势。");
+
+    const eventRows = events.length
+      ? events
+          .slice(0, 10)
+          .map(
+            (item) =>
+              '<div class="row" style="cursor:default;align-items:flex-start"><div class="row-main">' +
+              '<div class="row-title">' + esc(compact(item.event_type) || "情绪事件") + " · " + esc(compact(item.mood_hint) || "—") + "</div>" +
+              '<div class="row-sub">' + esc(clip(compact(item.content_preview), 56)) + (compact(item.energy_delta) ? " · 能量 " + num(item.energy_delta) : "") + "</div>" +
+              "</div>" + badge(shortId(item.session_id)) + "</div>"
+          )
+          .join("")
+      : emptyState("暂无情绪事件", "近期没有记录到情绪事件。");
+
+    const crossCards = [
+      kpi("跨窗口总量", fmtInt(cross.total), "", "accent"),
+      kpi("伤痕", fmtInt(cross.scar_count), "scar", "relation"),
+      kpi("温暖", fmtInt(cross.warm_count), "warm", "personal"),
+      kpi("脆弱", fmtInt(cross.vulnerable_count), "vulnerable", "fact"),
+    ].join("");
+
+    const coordStatus = data.coord || {};
+    const bridge = coordStatus.bridge || {};
+    const links = [
+      bridge.health === "ready" ? "is-ok" : bridge.health === "degraded" ? "is-warn" : "is-bad",
+      "陪伴桥接",
+      compact(bridge.reason_code) || compact(bridge.health) || "未知",
+    ];
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="section-label"><h2>表达协同</h2><span class="section-note">当前时段：' + esc(todLabels[compact(persona.time_of_day)] || compact(persona.time_of_day) || "未知") + "</span></div>" +
+      '<div class="grid split-2">' +
+        card("表达权威", "谁决定怎么说话", authority) +
+        '<div style="display:grid;gap:16px">' +
+          card("记忆触动趋势", trends.length + " 个窗口", '<div class="row-list">' + trendRows + "</div>") +
+          card("联动状态", "", '<div class="row-list"><div class="link-item ' + links[0] + '"><span class="link-dot"></span><b>' + esc(links[1]) + "</b><span>" + esc(links[2]) + "</span></div></div>") +
+        "</div>" +
+      "</div>" +
+      '<div class="kpi-row">' + crossCards + "</div>" +
+      card("近期情绪事件", events.length + " 条 · 只读投影", '<div class="row-list">' + eventRows + "</div>") +
+      "</div>"
+    );
+  },
+});
+
+/* ============================================================
+   视图：陪伴插件联动
+   ============================================================ */
+defineView("companion", {
+  title: "陪伴插件联动",
+  navLabel: "陪伴插件",
+  eyebrow: "Bridge · Companion",
+  hint: "主动陪伴插件的桥接状态、能力开关与个人记忆产出",
+  async load() {
+    const [caps, coord, personal] = await Promise.all([
+      apiTry(() => apiGet("/capabilities/bot-personal"), null),
+      apiTry(() => apiGet("/coordination/status"), { status: {} }),
+      apiTry(() => apiGet("/companion/personal-memory?limit=40"), null),
+    ]);
+    return { caps, coord: (coord && coord.status) || {}, personal };
+  },
+  render(data) {
+    const coord = data.coord || {};
+    const bridge = coord.bridge || {};
+    const status = companionStatus(data.caps, data.personal);
+
+    const installed = status.installed;
+    const offOr = (ok, warn) => (installed ? (ok ? "is-ok" : warn ? "is-warn" : "is-bad") : "is-off");
+
+    const items = [];
+    items.push([
+      installed ? (status.available ? "is-ok" : "is-warn") : "is-off",
+      "插件安装",
+      installed ? status.pluginName || "已安装" : "未安装 astrbot_plugin_private_companion",
+    ]);
+    items.push([
+      !installed ? "is-off" : bridge.health === "ready" ? "is-ok" : bridge.health === "degraded" ? "is-warn" : "is-bad",
+      "桥接状态",
+      !installed ? "需先安装陪伴插件" : bridgeHealthText(bridge),
+    ]);
+    items.push([
+      offOr(status.dailyPlanEnabled, true),
+      "每日日程",
+      installed ? (status.dailyPlanEnabled ? "已启用" : "未启用") : "不可用",
+    ]);
+    items.push([
+      offOr(status.detailEnabled, true),
+      "细化增强",
+      installed ? (status.detailEnabled ? "已启用" : "未启用") : "不可用",
+    ]);
+    if (installed && data.personal && data.personal.available) {
+      items.push(["is-ok", "可选日期", (data.personal.dates || []).length + " 天有记录"]);
+      items.push(["is-ok", "相册", ((data.personal.snapshot || {}).album || []).length + " 张"]);
+    }
+
+    const bridgeReason = compact(bridge.reason_code);
+    const p6 = coord.p6 || null;
+    const runtime = coord.runtime || {};
+    const runtimeLabel = runtimeHealthText(runtime);
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="grid split-2">' +
+        card(
+          "联动状态",
+          !installed ? "未安装陪伴插件" : status.available ? "已连接" : "已安装但未连通",
+          '<div class="row-list" style="gap:6px">' +
+            items.map((item) => '<div class="link-item ' + item[0] + '"><span class="link-dot"></span><b>' + esc(item[1]) + "</b><span>" + esc(item[2]) + "</span></div>").join("") +
+            "</div>" +
+            (bridgeReason && installed
+              ? '<p class="section-note"' + (REASON_TEXT[bridgeReason] ? ' title="' + esc(bridgeReason) + '"' : "") + ">"
+                + esc(REASON_TEXT[bridgeReason] || bridgeReason) + "</p>"
+              : !installed ? '<p class="section-note">未安装陪伴插件 astrbot_plugin_private_companion。记忆与注入照常工作，日程、相册与表达权威归属需要它。安装并启用后本页会自动显示真实状态。</p>' : "") +
+            (installed
+              ? '<div class="pill-row" style="margin-top:12px"><button class="btn is-sm" type="button" data-goto="botlife">查看 Bot 日程与相册</button></div>'
+              : "")
+        ) +
+        card(
+          "协调契约",
+          "只读投影 · 不在本插件持久化",
+          '<dl class="kv">' +
+            "<dt>契约版本</dt><dd>" + esc(compact(coord.schema_version) || "-") + "</dd>" +
+            "<dt>契约指纹</dt><dd>" + esc(compact(coord.contract_fingerprint) || "-") + "</dd>" +
+            "<dt>兼容等级</dt><dd>" + esc(runtimeLabel) + "</dd>" +
+            "<dt>桥接状态</dt><dd>" + esc(bridgeHealthText(bridge)) + "</dd>" +
+            (installed
+              ? "<dt>表达权威</dt><dd>private_companion</dd>"
+              : "<dt>表达权威</dt><dd>无（未安装陪伴插件）</dd>") +
+            "<dt>记忆角色</dt><dd>召回可见性与提及上限</dd>" +
+            (p6 ? "<dt>P6 状态</dt><dd>" + esc(compact(p6.health) || compact(p6.state) || "-") + "</dd>" : "") +
+            "</dl>"
+        ) +
+      "</div>" +
+      (p6
+        ? card("P6 只读状态", "由陪伴插件产出", '<pre style="margin:0;font-size:11.5px;line-height:1.6;color:var(--text-2);white-space:pre-wrap;word-break:break-all">' + esc(jsonPreview(p6)) + "</pre>")
+        : "") +
+      "</div>"
+    );
+  },
+});
+
+/* ============================================================
+   视图：外部接口记忆
+   ============================================================ */
+defineView("external", {
+  title: "外部接口记忆",
+  navLabel: "外部接口",
+  eyebrow: "Bridge · External",
+  hint: "由其他插件经 bridge 写入的记忆，按来源插件归类并可单独检索",
+  async load() {
+    const pool = await loadPool();
+    const external = pool.filter((memory) => {
+      const source = compact(memory.source_plugin);
+      return source && source !== "self" && source !== "astrbot_plugin_memory_companion";
+    });
+    const bySource = {};
+    external.forEach((memory) => {
+      const source = compact(memory.source_plugin);
+      bySource[source] = bySource[source] || { count: 0, types: {}, latest: "" };
+      bySource[source].count += 1;
+      const type = compact(memory.memory_type) || "unknown";
+      bySource[source].types[type] = (bySource[source].types[type] || 0) + 1;
+      const ts = compact(memory.created_at);
+      if (ts > bySource[source].latest) bySource[source].latest = ts;
+    });
+    return { external, bySource, poolSize: pool.length, capped: external.length >= pool.length && pool.length >= 800 };
+  },
+  render(data) {
+    const external = data.external || [];
+    const bySource = data.bySource || {};
+    const sources = Object.keys(bySource).sort((a, b) => bySource[b].count - bySource[a].count);
+
+    const sourceCards = sources.length
+      ? sources
+          .map((source) => {
+            const info = bySource[source];
+            const types = Object.entries(info.types)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map((entry) => (TYPE_LABEL[entry[0]] || entry[0]) + " " + entry[1])
+              .join(" · ");
+            return (
+              '<button class="scope-card" type="button" data-tone="external" data-goto="inspect" data-filter="external:' + esc(source) + '">' +
+              '<div class="scope-top">' + icon("plug", "scope-icon") + '<span class="scope-count">' + fmtInt(info.count) + " 条</span></div>" +
+              '<div class="scope-body"><div class="scope-name">' + esc(source) + "</div>" +
+              '<div class="scope-desc">' + esc(types || "无类型信息") + "</div></div>" +
+              '<div class="scope-bar"><i style="width:' + ((info.count / Math.max(1, external.length)) * 100).toFixed(1) + '%"></i></div>' +
+              '<div class="scope-foot"><span>最近 ' + esc(fmtDate(info.latest)) + "</span><span>查看 ›</span></div></button>"
+            );
+          })
+          .join("")
+      : emptyState("没有外部写入的记忆", "其他插件通过 bridge 写入记忆后，会按来源插件归类显示在这里。");
+
+    const rows = external.length
+      ? external
+          .slice(0, 60)
+          .map((memory) => memoryRow(memory))
+          .join("")
+      : "";
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      (data.capped
+        ? card("抽样提示", "", '<p style="font-size:12px;color:var(--text-2)">当前统计基于最近 ' + fmtInt(data.poolSize) + " 条记忆抽样，实际数量可能更多。</p>")
+        : "") +
+      '<div class="section-label"><h2>来源插件</h2><span class="section-note">' + sources.length + " 个来源 · 共 " + fmtInt(external.length) + " 条</span></div>" +
+      '<div class="grid g3">' + sourceCards + "</div>" +
+      (rows ? card("最近写入", "最多显示 60 条", '<div class="row-list">' + rows + "</div>") : "") +
+      "</div>"
+    );
+  },
+  mount(node) {
+    $$("[data-memory]", node).forEach((row) => {
+      row.addEventListener("click", () => openMemory(row.dataset.memory));
+    });
+  },
+});
+
+/* ============================================================
+   视图：历史聊天导入
+   ============================================================ */
+const importState = { tab: "qq", caps: null, preview: null, status: null, batchId: "" };
+
+function previewSummary(result) {
+  if (!result || typeof result !== "object") return "";
+  const stats = result.stats && typeof result.stats === "object" ? result.stats : {};
+  const speakers = Array.isArray(stats.speakers) ? stats.speakers : Object.keys(stats.speakers || {});
+  const pairs = [
+    ["来源", compact(result.source_name)],
+    ["类型", compact(result.source_kind)],
+    ["消息数", int(stats.message_count ?? stats.messages ?? stats.total ?? 0)],
+    ["说话人", speakers.length ? speakers.join(" / ") : "-"],
+    ["时间跨度", compact(stats.first_time) && compact(stats.last_time) ? compact(stats.first_time) + " → " + compact(stats.last_time) : "-"],
+    ["截断", result.truncated ? "是" : "否"],
+  ].filter((row) => row[1] !== "" && row[1] !== "-" || row[0] === "截断");
+  return '<dl class="kv">' + pairs.map((row) => "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>").join("") + "</dl>";
+}
+
+function speakerConfirmHtml(result) {
+  const stats = (result && result.stats && typeof result.stats === "object" ? result.stats : {});
+  const speakers = Array.isArray(stats.speakers) ? stats.speakers : Object.keys(stats.speakers || {});
+  const suggestions = Array.isArray(result.speaker_suggestions) ? result.speaker_suggestions : [];
+  const identity = (result && result.identity_context && typeof result.identity_context === "object") ? result.identity_context : {};
+  const matches = identity.matches && typeof identity.matches === "object" ? identity.matches : {};
+  const botInfo = identity.bot && typeof identity.bot === "object" ? identity.bot : {};
+
+  const rows = speakers
+    .map((speaker) => {
+      const suggestion = suggestions.find((item) => compact(item.speaker) === compact(speaker));
+      const role = compact(suggestion && suggestion.role) || (matches[speaker] ? "bot" : "user");
+      const entity = compact(suggestion && suggestion.entity_id) || compact(matches[speaker] && (matches[speaker].entity_id || matches[speaker].id)) || "";
+      return (
+        '<div class="acl-row" style="grid-template-columns:minmax(0,1fr) 110px minmax(0,1fr)">' +
+        '<div class="acl-node"><b>' + esc(speaker) + "</b></div>" +
+        '<select data-speaker="' + esc(speaker) + '" class="speaker-role" style="height:30px;padding:0 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px">' +
+          '<option value="user"' + (role === "bot" ? "" : " selected") + ">用户</option>" +
+          '<option value="bot"' + (role === "bot" ? " selected" : "") + ">Bot</option>" +
+        "</select>" +
+        '<input data-speaker-id="' + esc(speaker) + '" class="speaker-entity" type="text" value="' + esc(entity) + '" placeholder="实体 ID（可留空）" style="height:30px;padding:0 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px" />' +
+        "</div>"
+      );
+    })
+    .join("");
+
+  return (
+    '<div class="section-label" style="margin-top:4px"><h2>确认身份</h2><span class="section-note">必须恰好一个 Bot，至少一个用户</span></div>' +
+    (rows || '<p class="section-note">未能解析出说话人。</p>') +
+    '<div class="grid g3" style="margin-top:12px">' +
+      '<label class="field"><span>目标用户 ID</span><input id="impUserId" type="text" placeholder="例如 QQ 号" /></label>' +
+      '<label class="field"><span>目标用户名称</span><input id="impUserName" type="text" placeholder="可留空" /></label>' +
+      '<label class="field"><span>目标 Bot ID</span><input id="impBotId" type="text" placeholder="多 Bot 时必填" value="' + esc(compact(botInfo.bot_id) || compact(botInfo.id)) + '" /></label>' +
+      '<label class="field"><span>平台</span><input id="impPlatform" type="text" value="qq" /></label>' +
+      '<label class="field"><span>会话 ID</span><input id="impSession" type="text" placeholder="留空自动推断" /></label>' +
+    "</div>" +
+    '<div class="pill-row" style="margin-top:12px">' +
+      '<button class="btn is-primary" type="button" id="impStartBtn">开始生成记忆</button>' +
+      '<button class="btn is-ghost" type="button" id="impDiscardBtn">放弃预览</button>' +
+    "</div>"
+  );
+}
+
+defineView("chatimport", {
+  title: "历史聊天导入",
+  navLabel: "历史聊天",
+  eyebrow: "Import · Chat",
+  hint: "从当前 QQ 连接读取时段记录，或导入已有聊天文件，确认身份后再生成记忆",
+  async load() {
+    if (importState.tab === "qq" && !importState.caps) {
+      importState.caps = await apiTry(() => apiGet("/conversation-import/qq/capabilities"), null);
+    }
+    if (importState.batchId) {
+      importState.status = await apiTry(
+        () => apiGet("/conversation-import/status?batch_id=" + encodeURIComponent(importState.batchId)),
+        null
+      );
+    }
+    return { caps: importState.caps, preview: importState.preview, status: importState.status, tab: importState.tab };
+  },
+  render(data) {
+    const caps = data.caps || {};
+    const adapters = Array.isArray(caps.adapters) ? caps.adapters : [];
+    const available = caps.available === true;
+    const adapterError = adapters.map((item) => compact(item.error)).find((value) => value) || "";
+
+    const qqPanel =
+      '<div class="config-form">' +
+      '<label class="field"><span>当前 Bot 连接</span><select id="qqPlatform"' + (available ? "" : " disabled") + ">" +
+        (adapters.length
+          ? adapters.map((p) => '<option value="' + esc(compact(p.platform_id)) + '">' + esc(compact(p.platform_name) || compact(p.platform_id)) + "</option>").join("")
+          : '<option value="">等待能力检测</option>') +
+      "</select></label>" +
+      '<label class="field"><span>目标好友 QQ</span><input id="qqUserId" type="text" inputmode="numeric" placeholder="输入纯数字 QQ 号" /></label>' +
+      '<div class="grid g2" style="gap:10px">' +
+        '<label class="field"><span>开始时间</span><input id="qqStart" type="datetime-local" /></label>' +
+        '<label class="field"><span>结束时间</span><input id="qqEnd" type="datetime-local" /></label>' +
+      "</div>" +
+      '<div class="pill-row">' +
+        '<button class="btn is-sm is-ghost" type="button" id="qqCapBtn">重新检测</button>' +
+        '<button class="btn is-primary" type="button" id="qqPreviewBtn">读取并生成预览</button>' +
+      "</div>" +
+      (caps.available === false ? '<p class="section-note">' + esc(adapterError || "当前连接不支持读取历史") + "</p>" : "") +
+      "</div>";
+
+    const filePanel =
+      '<div class="config-form">' +
+      '<label class="dropzone" id="fileDrop" for="fileInput">' +
+        '<span aria-hidden="true" style="font-size:20px">＋</span>' +
+        "<b>拖入聊天记录，或点击选择文件</b>" +
+        "<small>支持 TXT、LOG、Markdown 和 QQChatExporter 私聊 JSON，最大 8 MiB</small>" +
+      "</label>" +
+      '<input id="fileInput" type="file" accept=".txt,.log,.md,.json,text/plain,text/markdown,application/json" style="display:none" />' +
+      '<label class="field is-inline"><span>缺失年份</span><input id="fileBaseYear" type="number" min="1970" max="2200" placeholder="通常留空" /></label>' +
+      '<div class="pill-row"><button class="btn is-primary" type="button" id="filePreviewBtn" disabled>解析并预览</button></div>' +
+      '<p class="section-note" id="fileMeta">尚未选择文件</p>' +
+      "</div>";
+
+    const recentPanel =
+      '<div class="config-form">' +
+      '<div class="pill-row"><button class="btn is-sm" type="button" id="recentRefreshBtn">刷新状态</button></div>' +
+      '<div id="recentList"><p class="section-note">点击刷新读取当前导入状态。</p></div>' +
+      "</div>";
+
+    const tabs = [
+      ["qq", "QQ 直接读取"],
+      ["file", "文件导入"],
+      ["recent", "最近任务"],
+    ]
+      .map((item) => '<button class="pill' + (data.tab === item[0] ? " is-active" : "") + '" type="button" data-tab="' + item[0] + '">' + esc(item[1]) + "</button>")
+      .join("");
+
+    const output = data.preview
+      ? card(
+          "预览结果",
+          compact(data.preview.source_name),
+          previewSummary(data.preview) +
+            ((data.preview.warnings || []).length
+              ? '<div class="tag-row" style="margin-top:8px">' + data.preview.warnings.map((w) => badge(clip(w, 40), "warn")).join("") + "</div>"
+              : "") +
+            speakerConfirmHtml(data.preview)
+        )
+      : emptyState("预览会显示在这里", "先选择 QQ 时段或聊天文件。系统只会在你确认身份后开始生成记忆。");
+
+    const statusCard = data.status
+      ? card("导入进度", compact(data.status.state) || "进行中", '<pre style="margin:0;font-size:11.5px;line-height:1.6;color:var(--text-2);white-space:pre-wrap;word-break:break-all">' + esc(jsonPreview(data.status.result || data.status)) + "</pre>" +
+          (importState.batchId
+            ? '<div class="pill-row" style="margin-top:12px">' +
+              '<button class="btn is-sm" type="button" id="impPauseBtn">暂停</button>' +
+              '<button class="btn is-sm" type="button" id="impResumeBtn">继续</button>' +
+              '<button class="btn is-sm is-danger" type="button" id="impRollbackBtn">回滚批次</button>' +
+              "</div>"
+            : ""))
+      : "";
+
+    return (
+      '<div class="grid" style="gap:16px">' +
+      '<div class="section-label"><h2>选择来源</h2><span class="section-note">两种来源共用身份确认与记忆整理流程</span></div>' +
+      '<div class="pill-row">' + tabs + "</div>" +
+      '<div class="grid split-2">' +
+        card(
+          data.tab === "qq" ? "QQ 直接读取" : data.tab === "file" ? "文件导入" : "最近任务",
+          data.tab === "qq" ? "通过 NapCat / aiocqhttp 好友历史接口读取" : data.tab === "file" ? "适合接口不可用或已有导出文件" : "查看、继续或回滚批次",
+          data.tab === "qq" ? qqPanel : data.tab === "file" ? filePanel : recentPanel
+        ) +
+        '<div style="display:grid;gap:16px">' + output + statusCard + "</div>" +
+      "</div>" +
+      "</div>"
+    );
+  },
+  mount(node) {
+    $$("[data-tab]", node).forEach((button) => {
+      button.addEventListener("click", () => {
+        importState.tab = button.dataset.tab;
+        go("chatimport");
+      });
+    });
+
+    const qqCap = $("#qqCapBtn", node);
+    if (qqCap) {
+      qqCap.addEventListener("click", async () => {
+        await withBusy("正在检测能力…", async () => {
+          importState.caps = await apiTry(() => apiGet("/conversation-import/qq/capabilities"), null);
+          toast("能力检测完成", "ok");
+          go("chatimport");
+        });
+      });
+    }
+
+    const qqPreview = $("#qqPreviewBtn", node);
+    if (qqPreview) {
+      qqPreview.addEventListener("click", async () => {
+        const payload = {
+          platform_id: $("#qqPlatform", node).value,
+          user_id: $("#qqUserId", node).value.trim(),
+          start_at: $("#qqStart", node).value,
+          end_at: $("#qqEnd", node).value,
+        };
+        if (!payload.user_id) {
+          toast("请填写目标好友 QQ", "error");
+          return;
+        }
+        await withBusy("正在读取历史…", async () => {
+          try {
+            const result = await apiPost("/conversation-import/qq/preview", payload);
+            const preview = result.result || result;
+            const previewStats = preview && preview.stats && typeof preview.stats === "object" ? preview.stats : {};
+            const messageCount = int(previewStats.message_count ?? previewStats.messages ?? 0);
+            if (!preview || messageCount <= 0) {
+              toast("没读到这个 QQ 号的历史消息：确认号是否填对、时间范围覆盖到聊天、当前连接支持读取历史", "warn");
+              return;
+            }
+            importState.preview = preview;
+            toast("预览已生成：" + messageCount + " 条消息", "ok");
+            go("chatimport");
+          } catch (error) {
+            toast("读取失败：" + (error.message || error), "error");
+          }
+        }, 1200);
+      });
+    }
+
+    const fileInput = $("#fileInput", node);
+    if (fileInput) {
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files && fileInput.files[0];
+        const meta = $("#fileMeta", node);
+        const btn = $("#filePreviewBtn", node);
+        if (!file) return;
+        meta.textContent = file.name + " · " + (file.size / 1048576).toFixed(2) + " MiB";
+        btn.disabled = false;
+      });
+    }
+
+    const filePreview = $("#filePreviewBtn", node);
+    if (filePreview) {
+      filePreview.addEventListener("click", async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        const buffer = await file.arrayBuffer();
+        let binary = "";
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+        await withBusy("正在解析文件…", async () => {
+          const result = await apiPost("/conversation-import/upload", {
+            filename: file.name,
+            content_base64: window.btoa(binary),
+            base_year: int($("#fileBaseYear", node).value) || 0,
+          });
+          importState.preview = result.result || result;
+          toast("预览已生成", "ok");
+          go("chatimport");
+        });
+      });
+    }
+
+    const recentRefresh = $("#recentRefreshBtn", node);
+    if (recentRefresh) {
+      recentRefresh.addEventListener("click", async () => {
+        await withBusy("正在读取状态…", async () => {
+          const result = await apiTry(() => apiGet("/conversation-import/status"), null);
+          const list = $("#recentList", node);
+          const payload = result && result.result ? result.result : result;
+          list.innerHTML =
+            '<pre style="margin:0;font-size:11.5px;line-height:1.6;color:var(--text-2);white-space:pre-wrap;word-break:break-all">' +
+            esc(jsonPreview(payload)) +
+            "</pre>";
+        });
+      });
+    }
+
+    const startBtn = $("#impStartBtn", node);
+    if (startBtn) {
+      startBtn.addEventListener("click", async () => {
+        const speakerMap = {};
+        $$(".speaker-role", node).forEach((select) => {
+          const idInput = $('[data-speaker-id="' + CSS.escape(select.dataset.speaker) + '"]', node);
+          speakerMap[select.dataset.speaker] = {
+            role: select.value,
+            entity_id: idInput ? idInput.value.trim() : "",
+            display_name: select.dataset.speaker,
+          };
+        });
+        const payload = {
+          upload_id: compact(importState.preview.upload_id),
+          speaker_map: speakerMap,
+          user_id: $("#impUserId", node).value.trim(),
+          user_name: $("#impUserName", node).value.trim(),
+          bot_id: $("#impBotId", node).value.trim(),
+          bot_name: "Bot",
+          platform: $("#impPlatform", node).value.trim() || "qq",
+          session_id: $("#impSession", node).value.trim(),
+        };
+        if (!payload.user_id || !payload.bot_id) {
+          toast("请填写目标用户 ID 与 Bot ID", "error");
+          return;
+        }
+        await withBusy("正在生成记忆…", async () => {
+          const result = await apiPost("/conversation-import/start", payload);
+          const body = result.result || result;
+          importState.batchId = compact(body.batch_id) || compact(body.id);
+          importState.preview = null;
+          invalidatePool();
+          toast("导入已启动", "ok");
+          go("chatimport");
+        });
+      });
+    }
+
+    const discard = $("#impDiscardBtn", node);
+    if (discard) {
+      discard.addEventListener("click", () => {
+        importState.preview = null;
+        go("chatimport");
+      });
+    }
+
+    const bindBatch = (id, action) => {
+      const button = $(id, node);
+      if (!button) return;
+      button.addEventListener("click", async () => {
+        await withBusy("正在处理…", async () => {
+          await apiPost("/conversation-import/" + action, { batch_id: importState.batchId });
+          toast("操作已提交", "ok");
+          go("chatimport");
+        });
+      });
+    };
+    bindBatch("#impPauseBtn", "pause");
+    bindBatch("#impResumeBtn", "resume");
+    bindBatch("#impRollbackBtn", "rollback");
+  },
+});
+
+/* ============================================================
+   视图：维护与迁移
+   ============================================================ */
+const PRESET_LABELS = { light: "轻量", standard: "标准", companion: "陪伴" };
+let migrateOutput = null;
+
+defineView("migrate", {
+  title: "维护与迁移",
+  navLabel: "维护与迁移",
+  eyebrow: "Import · Maintenance",
+  hint: "运行预设、运维诊断、可移植数据、LivingMemory 迁移与可回滚审计",
+  async load() {
+    const preset = await apiTry(() => apiGet("/operations/preset"), { preset: {} });
+    return { preset: preset.preset || {}, output: migrateOutput };
+  },
+  render(data) {
+    const preset = data.preset || {};
+    const current = compact(preset.preset) || compact(preset.current) || "-";
+
+    const presets =
+      '<div class="tool-block"><b>1. 运行预设</b>' +
+      "<p>轻量关闭外部检索调用；标准平衡功能与成本；陪伴提高关系与连续性记忆预算。已有 Provider 选择不会被覆盖。</p>" +
+      '<div class="tool-actions">' +
+      Object.keys(PRESET_LABELS)
+        .map((key) => '<button class="btn is-sm' + (current === key ? " is-primary" : "") + '" type="button" data-preset="' + key + '">' + PRESET_LABELS[key] + "</button>")
+        .join("") +
+      '<span class="badge" style="margin-left:auto">当前：' + esc(PRESET_LABELS[current] || current) + "</span>" +
+      "</div></div>";
+
+    const tools = [
+      {
+        title: "2. 运维诊断",
+        desc: "查看检索路径、缓存命中率、模型 Token 与耗时。",
+        action: "diagnosticsBtn",
+        label: "生成诊断",
+      },
+      {
+        title: "3. 可移植数据",
+        desc: "仅用于本插件导出的 UTF-8 JSONL，包含记忆、身份、关系、时间线与 ACL。",
+        input: "portablePath",
+        placeholder: "导入时填写 JSONL 路径；导出无需填写",
+        actions: [
+          ["portableExportBtn", "导出"],
+          ["portablePreviewBtn", "预览"],
+          ["portableImportBtn", "导入"],
+        ],
+      },
+      {
+        title: "4. LivingMemory 导入",
+        desc: "先预览可导入数量和跳过原因，再执行导入。当前策略只导入完整摘要。",
+        input: "lmPath",
+        placeholder: "LivingMemory 数据库路径，可留空自动扫描",
+        actions: [
+          ["lmPreviewBtn", "预览导入"],
+          ["lmRunBtn", "执行导入"],
+        ],
+      },
+      {
+        title: "5. 内容修复",
+        desc: "修复早期导入后只剩旧库编号的记忆。",
+        input: "lmRepairPath",
+        placeholder: "LivingMemory 数据库路径，可留空自动扫描",
+        actions: [["lmRepairBtn", "修复内容"]],
+      },
+      {
+        title: "6. 维护检查",
+        desc: "修复索引、刷新统计并整理数据库状态。",
+        actions: [["maintenanceBtn", "运行维护"]],
+      },
+      {
+        title: "7. 汇总批次释放",
+        desc: "被证据门禁隔离的批次会永远持有其时间线事件，那些原文不会再进入任何后续批次。填批次 ID 后由人工复核决定：重新排队（事件交还，可被新批次消费）或放弃（承认丢失，不再悬空）。",
+        input: "releaseBatchId",
+        placeholder: "sb_... 批次 ID",
+        actions: [
+          ["releaseRetryBtn", "重新排队"],
+          ["releaseDiscardBtn", "放弃并关闭"],
+        ],
+      },
+      {
+        title: "8. 可回滚记忆审计",
+        desc: "先生成证据约束的预览，再明确应用；已应用批次可回滚。",
+        audits: true,
+        actions: [
+          ["auditPreviewBtn", "生成预览"],
+          ["auditStatusBtn", "读取状态"],
+          ["auditApplyBtn", "应用"],
+          ["auditRollbackBtn", "回滚"],
+        ],
+      },
+      {
+        title: "9. 危险清理",
+        desc: "清空会先备份数据库，再删除记忆、权限规则、时间线、关系、身份与注入日志。",
+        danger: true,
+        actions: [["clearAllBtn", "清空全部记忆"]],
+      },
+    ]
+      .map((tool) => {
+        const input = tool.input
+          ? '<input id="' + tool.input + '" type="text" placeholder="' + esc(tool.placeholder || "") + '" style="height:30px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px" />'
+          : "";
+        const audits = tool.audits
+          ? '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+            '<input id="auditLimit" type="number" min="0" max="100" value="0" style="width:92px;height:30px;padding:0 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px" />' +
+            '<input id="auditBatch" type="text" placeholder="audit_..." style="flex:1;min-width:150px;height:30px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px" />' +
+            "</div>"
+          : "";
+        return (
+          '<div class="tool-block"><b>' + esc(tool.title) + "</b><p>" + esc(tool.desc) + "</p>" +
+          input + audits +
+          '<div class="tool-actions">' +
+          (tool.actions || [])
+            .map((row) => '<button class="btn is-sm' + (tool.danger ? " is-danger" : "") + '" type="button" id="' + row[0] + '">' + esc(row[1]) + "</button>")
+            .join("") +
+          "</div></div>"
+        );
+      })
+      .join("");
+
+    return (
+      '<div class="grid split-2">' +
+      card("维护工具", "按顺序执行更稳妥", presets + tools) +
+      card(
+        "输出",
+        "最近一次操作结果",
+        data.output
+          ? '<pre style="margin:0;font-size:11.5px;line-height:1.6;color:var(--text-2);white-space:pre-wrap;word-break:break-all">' + esc(jsonPreview(data.output)) + "</pre>"
+          : emptyState("还没有输出", "执行任一操作后，结果会显示在这里。")
+      ) +
+      "</div>"
+    );
+  },
+  mount(node) {
+    const run = async (label, fn) => {
+      await withBusy(label + "…", async () => {
+        try {
+          migrateOutput = await fn();
+          toast(label + "完成", "ok");
+        } catch (error) {
+          migrateOutput = { error: error.message };
+          toast(label + "失败：" + error.message, "error");
+        }
+        go("migrate");
+      });
+    };
+
+    $$("[data-preset]", node).forEach((button) => {
+      button.addEventListener("click", () => run("应用预设", () => apiPost("/operations/preset", { preset: button.dataset.preset })));
+    });
+
+    const bind = (id, fn, label) => {
+      const button = $(id, node);
+      if (button) button.addEventListener("click", () => run(label, fn));
+    };
+
+    bind("#diagnosticsBtn", () => apiGet("/operations/diagnostics"), "生成诊断");
+    bind("#portableExportBtn", () => apiPost("/data/export", {}), "导出数据");
+    bind("#portablePreviewBtn", () => {
+      const path = $("#portablePath", node).value.trim();
+      if (!path) throw new Error("请先填写 JSONL 路径");
+      return apiGet("/data/import/preview?path=" + encodeURIComponent(path));
+    }, "预览导入");
+    bind("#portableImportBtn", () => {
+      const path = $("#portablePath", node).value.trim();
+      if (!path) throw new Error("请先填写 JSONL 路径");
+      return apiPost("/data/import/run", { path });
+    }, "导入数据");
+    bind("#lmPreviewBtn", () => {
+      const input = $("#lmPath", node);
+      const path = input ? input.value.trim() : "";
+      return apiGet("/import/livingmemory/preview?path=" + encodeURIComponent(path));
+    }, "预览迁移");
+    bind("#lmRunBtn", () => apiPost("/import/livingmemory/run", { path: $("#lmPath", node).value.trim() }), "执行迁移");
+    bind("#lmRepairBtn", () => apiPost("/maintenance/repair_livingmemory_content", { path: $("#lmRepairPath", node).value.trim() }), "修复内容");
+    bind("#maintenanceBtn", () => apiPost("/maintenance", {}), "运行维护");
+    bind("#releaseRetryBtn", () => {
+      const batchId = $("#releaseBatchId", node).value.trim();
+      if (!batchId) throw new Error("请先填写批次 ID");
+      return apiPost("/maintenance/release_summary_batch", { batch_id: batchId, mode: "retry" });
+    }, "释放批次事件");
+    bind("#releaseDiscardBtn", async () => {
+      const batchId = $("#releaseBatchId", node).value.trim();
+      if (!batchId) throw new Error("请先填写批次 ID");
+      const confirmed = await showInlineConfirmation(
+        "放弃该批次的事件",
+        "这些原始消息将被标记为已总结，等于承认它们不会进入长期记忆。确定继续？",
+        "放弃"
+      );
+      if (!confirmed) throw new Error("已取消");
+      return apiPost("/maintenance/release_summary_batch", { batch_id: batchId, mode: "discard" });
+    }, "放弃批次事件");
+    bind("#auditPreviewBtn", () => apiPost("/maintenance/audit/preview", { limit: int($("#auditLimit", node).value) }), "生成审计预览");
+    bind("#auditStatusBtn", () => apiGet("/maintenance/audit/status?batch_id=" + encodeURIComponent($("#auditBatch", node).value.trim())), "读取审计状态");
+    bind("#auditApplyBtn", () => apiPost("/maintenance/audit/apply", { batch_id: $("#auditBatch", node).value.trim(), confirm: "应用" }), "应用审计");
+    bind("#auditRollbackBtn", () => apiPost("/maintenance/audit/rollback", { batch_id: $("#auditBatch", node).value.trim(), confirm: "回滚" }), "回滚审计");
+    bind("#clearAllBtn", async () => {
+      const confirmed = await showInlineConfirmation("清空全部记忆", "将清空全部记忆数据（会先备份数据库）。确定继续？", "清空");
+      if (!confirmed) throw new Error("已取消");
+      return apiPost("/maintenance/clear_all", { confirm: "清空" });
+    }, "清空记忆");
+  },
+});
+
+/* ============================================================
+   视图：待修复批次
+   ============================================================ */
+const QUARANTINE_PAGE_SIZE = 50;
+let quarantineOffset = 0;
+let queueOffset = 0;
+let processedOffset = 0;
+let quarantineTab = "quarantined";
+
+const BATCH_TAB_META = {
+  quarantined: {
+    title: "待修复批次",
+    eyebrow: "Quarantine · Review",
+    hint: "被隔离的总结批次：原文事件已冻结，需人工复核后重新排队或放弃",
+  },
+  pending: {
+    title: "排队处理",
+    eyebrow: "Queue · Pending",
+    hint: "正常排队等后台总结的批次，只读；总结失败的会进入「待修复」",
+  },
+  processed: {
+    title: "已处理批次",
+    eyebrow: "Processed · History",
+    hint: "已经总结完的批次：产出记忆或确认没有新增，只读",
+  },
+};
+
+const batchesView = (fixedTab, viewId, getOffset, setOffset) => {
+  const meta = BATCH_TAB_META[fixedTab];
+  const isRepair = fixedTab === "quarantined";
+  return {
+    title: meta.title,
+    navLabel: meta.title,
+    eyebrow: meta.eyebrow,
+    hint: meta.hint,
+    async load() {
+      return apiTry(
+        () => apiGet("/maintenance/summary_batches?state=" + fixedTab + "&limit=" + QUARANTINE_PAGE_SIZE + "&offset=" + getOffset()),
+        { total: 0, legacy_failures: 0, batches: [] }
+      );
+    },
+    render(data) {
+      const total = int(data.total);
+      const legacy = int(data.legacy_failures);
+      const batches = Array.isArray(data.batches) ? data.batches : [];
+      const offset = getOffset();
+      const pageTo = offset + batches.length;
+
+      const tone = isRepair ? "gold" : fixedTab === "pending" ? "accent" : "private";
+      const summary =
+        '<div class="pill-row" style="gap:8px;margin-bottom:12px">' +
+        badge(meta.title + " " + fmtInt(total), tone) +
+        (isRepair ? badge("旧版失败记录 " + fmtInt(legacy), "fact") : "") +
+        "</div>";
+
+      const bulk = isRepair
+        ? '<div class="tool-actions" style="margin-bottom:12px">' +
+          '<button class="btn is-sm" type="button" id="qRetryAllBtn">全部重新排队</button>' +
+          '<button class="btn is-sm is-danger" type="button" id="qDiscardAllBtn">全部放弃</button>' +
+          '<button class="btn is-sm" type="button" id="qRefreshBtn">刷新</button>' +
+          '<button class="btn is-sm" type="button" data-goto="queue">看排队处理</button>' +
+          '<button class="btn is-sm" type="button" data-goto="processed">看已处理</button>' +
+          "</div>"
+        : '<div class="tool-actions" style="margin-bottom:12px">' +
+          '<span class="kpi-foot" style="align-self:center">' +
+          (fixedTab === "pending"
+            ? "这些批次在正常排队等总结，不需要处理；失败的会进「待修复」。"
+            : "这些批次已经处理完，仅供查阅；失败的会进「待修复」。") +
+          "</span>" +
+          '<button class="btn is-sm" type="button" id="qRefreshBtn">刷新</button>' +
+          '<button class="btn is-sm" type="button" data-goto="quarantine">去待修复</button>' +
+          (fixedTab === "pending"
+            ? '<button class="btn is-sm" type="button" data-goto="processed">看已处理</button>'
+            : '<button class="btn is-sm" type="button" data-goto="queue">看排队处理</button>') +
+          "</div>";
+
+      const pager =
+        '<div class="pill-row" style="justify-content:space-between;align-items:center;margin-top:12px">' +
+        '<button class="btn is-sm" type="button" id="qPrevBtn"' + (offset <= 0 ? " disabled" : "") + ">上一页</button>" +
+        '<span class="kpi-foot">' + (batches.length ? offset + 1 + "–" + pageTo + " / " + fmtInt(total) : "无记录") + "</span>" +
+        '<button class="btn is-sm" type="button" id="qNextBtn"' + (pageTo >= total ? " disabled" : "") + ">下一页</button>" +
+        "</div>";
+
+      const rows = batches.length
+        ? '<div class="row-list">' +
+          batches
+            .map((item) =>
+              '<div class="row">' +
+              '<div class="row-main">' +
+              '<div class="row-title">' + esc(compact(item.session_id)) + "</div>" +
+              '<div class="row-sub">' + esc(compact(item.last_error) || "（无错误摘要）") + "</div>" +
+              '<div class="row-sub" style="font-family:var(--font-mono)">' + esc(item.id) + "</div>" +
+              '<div class="row-meta">' +
+              badge("事件 " + fmtInt(item.event_count), "group") +
+              badge(compact(item.scope), "fact") +
+              (fixedTab === "processed"
+                ? badge(item.state === "no_memory" ? "无新增记忆" : "已总结", item.state === "no_memory" ? "gold" : "accent")
+                : "") +
+              badge(String(item.updated_at || "").slice(0, 16), "private") +
+              "</div></div>" +
+              (isRepair
+                ? '<div class="tool-actions" style="margin-top:0">' +
+                  '<button class="btn is-sm" type="button" data-q-action="retry" data-q-batch="' + esc(item.id) + '">重新排队</button>' +
+                  '<button class="btn is-sm is-danger" type="button" data-q-action="discard" data-q-batch="' + esc(item.id) + '">放弃</button>' +
+                  "</div>"
+                : "") + "</div>"
+            )
+            .join("") +
+          "</div>"
+        : isRepair
+          ? emptyState("没有待修复批次", "被隔离的总结批次会出现在这里，可逐条或整批重新排队 / 放弃。")
+          : fixedTab === "pending"
+            ? emptyState("没有排队中的批次", "所有批次都已总结完，或正由后台处理。")
+            : emptyState("没有已处理批次", "总结完成的批次会出现在这里。");
+
+      return (
+        '<div class="grid">' +
+        card(
+          meta.title,
+          isRepair
+            ? "隔离批次持有其原文事件，释放后事件才会重新进入总结流程"
+            : fixedTab === "pending"
+              ? "正常排队等后台总结的批次，只读；总结失败的会进入「待修复」"
+              : "已完成的总结批次，仅供查阅",
+          summary + bulk + rows + pager
+        ) +
+        "</div>"
+      );
+    },
+    mount(node) {
+      const run = async (label, fn, minMs) => {
+        await withBusy(label + "…", async () => {
+          try {
+            const result = await fn();
+            const payload = result && typeof result === "object"
+              ? (result.data && typeof result.data === "object" ? result.data : result)
+              : {};
+            const released = payload.released;
+            toast(label + (released !== undefined ? "：" + released + " 条" : "完成"), "ok");
+          } catch (error) {
+            toast(label + "失败：" + error.message, "error");
+          }
+          go(viewId);
+        }, minMs === undefined ? 3000 : minMs);
+      };
+      const bulkRelease = async (mode, label) => {
+        const info = await apiTry(() => apiGet("/maintenance/summary_batches?state=quarantined&limit=1&offset=0"), { total: 0 });
+        const total = int(info.total);
+        let done = 0;
+        let guard = 0;
+        while (guard < 500) {
+          guard += 1;
+          setBusyText(label + " " + done + " / " + total);
+          const result = await apiPost("/maintenance/release_summary_batches", { all: true, mode, limit: 10 });
+          const payload = result && typeof result === "object"
+            ? (result.data && typeof result.data === "object" ? result.data : result)
+            : {};
+          const released = int(payload.released);
+          if (released <= 0) break;
+          done += released;
+        }
+        setBusyText(label + " " + done + " / " + total + " · 完成");
+        return { data: { released: done, total } };
+      };
+      const bind = (id, fn, label, minMs) => {
+        const button = $(id, node);
+        if (button) button.addEventListener("click", () => run(label, fn, minMs));
+      };
+      bind("#qRefreshBtn", () => Promise.resolve({}), "刷新");
+      if (isRepair) {
+        bind("#qRetryAllBtn", async () => {
+          const confirmed = await showInlineConfirmation("全部重新排队", "把全部待修复批次的事件交还，交给后续会话重新总结。确定继续？", "重新排队");
+          if (!confirmed) throw new Error("已取消");
+          return bulkRelease("retry", "已重新排队");
+        }, "全部重新排队", 800);
+        bind("#qDiscardAllBtn", async () => {
+          const confirmed = await showInlineConfirmation("全部放弃", "把全部待修复批次的原文标记为已总结，等于承认它们不再进入长期记忆。确定继续？", "全部放弃");
+          if (!confirmed) throw new Error("已取消");
+          return bulkRelease("discard", "已放弃");
+        }, "全部放弃", 800);
+      }
+      const prev = $("#qPrevBtn", node);
+      if (prev) prev.addEventListener("click", () => { setOffset(Math.max(0, getOffset() - QUARANTINE_PAGE_SIZE)); go(viewId); });
+      const next = $("#qNextBtn", node);
+      if (next) next.addEventListener("click", () => { setOffset(getOffset() + QUARANTINE_PAGE_SIZE); go(viewId); });
+      $$("[data-q-action]", node).forEach((button) => {
+        button.addEventListener("click", () => {
+          const batchId = button.dataset.qBatch;
+          if (button.dataset.qAction === "discard") {
+            run("放弃批次", async () => {
+              const confirmed = await showInlineConfirmation("放弃该批次", "该批次的原文将被标记为已总结，不再进入长期记忆。确定继续？", "放弃");
+              if (!confirmed) throw new Error("已取消");
+              return apiPost("/maintenance/release_summary_batches", { batch_ids: [batchId], mode: "discard" });
+            });
+          } else {
+            run("重新排队", () => apiPost("/maintenance/release_summary_batches", { batch_ids: [batchId], mode: "retry" }));
+          }
+        });
+      });
+    },
+  };
+};
+
+defineView("quarantine", batchesView("quarantined", "quarantine", () => quarantineOffset, (value) => { quarantineOffset = value; }));
+defineView("queue", batchesView("pending", "queue", () => queueOffset, (value) => { queueOffset = value; }));
+defineView("processed", batchesView("processed", "processed", () => processedOffset, (value) => { processedOffset = value; }));
+
+/* ============================================================
+   视图：模块配置
+   ============================================================ */
+const MODULE_LABELS = {
+  appearance: "外观",
+  memory_capture: "记忆捕获",
+  scope_control: "范围控制",
+  portrait: "统一画像",
+  memory_summary: "记忆摘要",
+  historical_chat_import: "历史聊天导入",
+  retrieval: "检索",
+  retrieval_advanced: "检索进阶",
+  memory_injection: "记忆注入",
+  conversation_memory: "对话记忆",
+  conversation_memory_advanced: "对话记忆进阶",
+  core_memory: "核心记忆",
+  context_orchestration: "上下文编排",
+  context_orchestration_advanced: "上下文编排进阶",
+  private_companion_bridge: "陪伴桥接",
+  visibility: "可见性",
+  memory_tools: "记忆工具",
+  memory_reconstruction: "记忆重建",
+  knowledge_graph: "知识图谱",
+  livingmemory_migration: "LivingMemory 迁移",
+  maintenance: "维护",
+  maintenance_audit: "记忆审计",
+  maintenance_decay: "记忆衰减",
+  memory_assertions: "记忆断言",
+  source_semantic: "原文语义",
+  startup: "启动",
+};
+
+// 2.6.2：面板里只把每个模块最常用的几项摆在明面上，其余收进「高级项」折叠，
+// 免得一个模块几十个输入框糊一屏、找不到该改哪一项。完整配置仍在 AstrBot 配置页。
+const CONFIG_COMMON_KEYS = {
+  appearance: ["theme", "ui_style"],
+  memory_capture: ["enabled", "capture_user_messages", "capture_bot_responses", "extract_stable_facts"],
+  scope_control: [
+    "private_capture_enabled",
+    "group_capture_enabled",
+    "private_recall_enabled",
+    "group_recall_enabled",
+    "private_topology_enabled",
+    "group_topology_enabled",
+  ],
+  portrait: ["daily_dispatch_enabled", "min_independent_evidence", "daily_success_limit_per_person"],
+  memory_assertions: ["enabled", "max_per_batch"],
+  memory_summary: [
+    "enabled",
+    "provider_id",
+    "private_provider_id",
+    "group_provider_id",
+    "trigger_event_count",
+    "trigger_interval_minutes",
+    "max_summary_chars",
+  ],
+  historical_chat_import: ["qq_max_range_days", "qq_max_messages", "max_retries"],
+  retrieval: ["embedding_enabled", "embedding_provider_id", "mode", "rerank_provider_id"],
+  retrieval_advanced: ["embedding_top_k", "embedding_weight", "embedding_score_threshold", "mmr_redundancy_weight"],
+  source_semantic: ["enabled", "provider_id"],
+  memory_injection: ["enabled", "top_k", "max_chars", "enable_injection_logs"],
+  memory_humanization: ["enabled", "vivid_full_days", "no_recall_hint_enabled"],
+  conversation_memory: ["enabled", "capture_private_messages", "capture_group_messages", "idle_gap_minutes"],
+  conversation_memory_advanced: [
+    "cross_window_group_to_private_enabled",
+    "cross_window_private_to_group_enabled",
+    "recent_fact_guard_enabled",
+    "topic_shift_guard_enabled",
+  ],
+  core_memory: ["enabled", "max_blocks", "max_chars"],
+  context_orchestration: ["enabled", "query_mode", "include_intent_context"],
+  context_orchestration_advanced: ["stable_memory_limit", "user_profile_limit", "current_window_limit"],
+  persona_memory: ["enabled", "max_chars", "max_items"],
+  private_companion_bridge: ["enabled", "prefer_memory_companion_memory", "accept_external_records"],
+  visibility: ["allow_group_public_in_private", "hide_pending_review", "enable_acl_rules"],
+  memory_tools: ["enable_recall_tool", "enable_remember_tool", "allow_group_remember", "enable_query_progress"],
+  memory_reconstruction: ["enabled", "max_steps", "per_step_limit"],
+  knowledge_graph: ["enabled", "retrieval_expansion_enabled"],
+  livingmemory_migration: ["import_limit", "livingmemory_db_path"],
+  maintenance: ["memory_decay_enabled", "auto_schedule_enabled", "retention_raw_event_days", "backup_before_import"],
+  maintenance_audit: ["enabled", "max_candidates"],
+  maintenance_decay: ["memory_decay_after_days", "memory_decay_idle_days", "memory_decay_gradual_enabled"],
+  startup: ["background_grace_seconds"],
+};
+
+// P8：后端下发的受保护键（可见性 / 桥接闸门 / 凭据类）在面板里只读，
+// 保存时也不提交——面板不能成为修改安全键的通道。
+function protectedConfigSets(data) {
+  const keys = data && Array.isArray(data.protected_keys) ? data.protected_keys : [];
+  const modules = data && Array.isArray(data.protected_modules) ? data.protected_modules : [];
+  return { keys: new Set(keys), modules: new Set(modules) };
+}
+
+function isProtectedConfigKey(guard, moduleId, key) {
+  return guard.modules.has(moduleId) || guard.keys.has(moduleId + "." + key);
+}
+
+defineView("config", {
+  title: "模块配置",
+  navLabel: "模块配置",
+  eyebrow: "Settings · Config",
+  hint: "按模块调整检索、注入、编排与维护策略，保存后立即写入插件配置",
+  async load() {
+    const result = await apiGet("/config/schema");
+    state.configSchema = result;
+    return result;
+  },
+  render(data) {
+    const schema = data.schema || {};
+    const values = data.values || {};
+    const modules = Object.keys(schema);
+    if (!modules.includes(state.configModule)) state.configModule = modules[0] || "appearance";
+    const moduleId = state.configModule;
+    const moduleSchema = schema[moduleId] || { items: {} };
+    const moduleValues = values[moduleId] || {};
+    const items = moduleSchema.items || {};
+    const guard = protectedConfigSets(data);
+
+    const nav = modules
+      .map(
+        (key) =>
+          '<button type="button" class="' + (key === moduleId ? "is-active" : "") + '" data-module="' + esc(key) + '">' +
+          "<span>" + esc(MODULE_LABELS[key] || key) + "</span>" +
+          "<em>" + Object.keys((schema[key] || {}).items || {}).length + "</em></button>"
+      )
+      .join("");
+
+    const commonKeySet = new Set(CONFIG_COMMON_KEYS[moduleId] || []);
+    const commonKeys = Object.keys(items).filter((key) => commonKeySet.has(key));
+    const advancedKeys = Object.keys(items).filter((key) => !commonKeySet.has(key));
+    const renderFields = (keys) =>
+      keys
+        .map((key) => {
+        const item = items[key] || {};
+        const value = moduleValues[key] === undefined ? item.default : moduleValues[key];
+        const desc = compact(item.description) || key;
+        const hint = compact(item.hint);
+        const locked = isProtectedConfigKey(guard, moduleId, key);
+        let input;
+        if (Array.isArray(item.options) && item.options.length) {
+          input =
+            '<select id="cfg_' + esc(key) + '">' +
+            item.options
+              .map((opt) => '<option value="' + esc(opt) + '"' + (String(value) === String(opt) ? " selected" : "") + ">" + esc(opt) + "</option>")
+              .join("") +
+            "</select>";
+        } else if (item.type === "bool" || item.type === "boolean") {
+          input =
+            '<label class="switch"><input type="checkbox" id="cfg_' + esc(key) + '"' + (value ? " checked" : "") + ' /><span class="switch-track"></span><span>' + (value ? "已启用" : "已关闭") + "</span></label>";
+        } else if (item.type === "int" || item.type === "float" || item.type === "number") {
+          input = '<input type="number" id="cfg_' + esc(key) + '" value="' + esc(value === undefined || value === null ? "" : value) + '" step="' + (item.type === "float" ? "0.01" : "1") + '" />';
+        } else if (item.type === "list" || Array.isArray(value)) {
+          input = '<input type="text" id="cfg_' + esc(key) + '" value="' + esc(Array.isArray(value) ? value.join(",") : compact(value)) + '" />';
+        } else {
+          input = '<input type="text" id="cfg_' + esc(key) + '" value="' + esc(value === undefined || value === null ? "" : value) + '" />';
+        }
+        if (locked) input = input.replace(/<(input|select)/, "<$1 disabled");
+        return (
+          '<div class="config-field"><div><div class="cf-label">' + esc(desc) +
+          (locked ? ' <span class="cf-desc">（安全键 · 只读）</span>' : "") + "</div>" +
+          (hint ? '<div class="cf-desc">' + esc(hint) + "</div>" : "") +
+          '<div class="cf-desc mono" style="opacity:.7;margin-top:4px">' + esc(key) + "</div></div>" +
+          '<div class="cf-input">' + input + "</div></div>"
+        );
+      })
+      .join("");
+    const fields = renderFields(commonKeys);
+    const advancedFields = renderFields(advancedKeys);
+
+    return (
+      '<div class="config-layout">' +
+      '<nav class="config-nav">' + nav + "</nav>" +
+      '<div style="display:grid;gap:14px">' +
+        card(
+          MODULE_LABELS[moduleId] || moduleId,
+          compact(moduleSchema.description) || moduleId,
+          '<form id="configForm" class="config-form">' +
+  (fields || (advancedFields ? "" : emptyState("该模块没有可配置项", ""))) +
+  (advancedFields
+    ? '<details class="config-advanced"><summary>高级项（' + advancedKeys.length + " 个）· 一般不用改</summary>" + advancedFields + "</details>"
+    : "") +
+  "</form>",
+          '<button class="btn is-primary is-sm" type="button" id="configSaveBtn">保存本模块</button>'
+        ) +
+        (moduleSchema.hint ? '<p class="section-note">' + esc(moduleSchema.hint) + "</p>" : "") +
+      "</div>" +
+      "</div>"
+    );
+  },
+  mount(node, data) {
+    const schema = data.schema || {};
+    $$("[data-module]", node).forEach((button) => {
+      button.addEventListener("click", () => {
+        state.configModule = button.dataset.module;
+        go("config");
+      });
+    });
+
+    const saveBtn = $("#configSaveBtn", node);
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const moduleId = state.configModule;
+        const items = (schema[moduleId] || {}).items || {};
+        const guard = protectedConfigSets(data);
+        const values = {};
+        Object.keys(items).forEach((key) => {
+          if (isProtectedConfigKey(guard, moduleId, key)) return;
+          const item = items[key] || {};
+          const el = $("#cfg_" + key, node);
+          if (!el) return;
+          if (el.type === "checkbox") values[key] = el.checked;
+          else if (el.type === "number") values[key] = el.value === "" ? null : Number(el.value);
+          else if (Array.isArray(item.options)) values[key] = el.value;
+          else if (item.type === "list" || Array.isArray(items[key].default)) {
+            values[key] = el.value.trim() === "" ? [] : el.value.split(",").map((v) => v.trim());
+          } else values[key] = el.value;
+        });
+        await withBusy("正在保存…", async () => {
+          await apiPost("/config/module/update", { module: moduleId, values });
+          toast("已保存 " + (MODULE_LABELS[moduleId] || moduleId), "ok");
+          invalidatePool();
+          // 配色改完当场生效，不用刷新页面——不然用户会以为这项又没生效
+          if (moduleId === "appearance") syncPalette();
+          go("config");
+        });
+      });
+    }
+
+    $$(".switch input", node).forEach((input) => {
+      input.addEventListener("change", () => {
+        const label = input.parentElement.querySelector("span:last-child");
+        if (label) label.textContent = input.checked ? "已启用" : "已关闭";
+      });
+    });
+  },
+});
+
+/* ============================================================
+   视图：权限拓扑
+   ============================================================ */
+const ACL_MODE_LABELS = { whitelist: "白名单", blacklist: "黑名单" };
+
+const SCOPE_SWITCHES = [
+  ["private_capture_enabled", "私聊捕获"],
+  ["group_capture_enabled", "群聊捕获"],
+  ["private_recall_enabled", "私聊召回"],
+  ["group_recall_enabled", "群聊召回"],
+  ["private_topology_enabled", "私聊参与拓扑"],
+  ["group_topology_enabled", "群聊参与拓扑"],
+];
+
+const ACL_MAX_MATRIX = 8;
+const ACL_MAX_EXPANDED = 16;
+
+const aclState = { query: "", onlyLinked: false, selected: "", expanded: false };
+
+function winKey(scope, id) {
+  return compact(scope) + ":" + compact(id);
+}
+
+function winName(win) {
+  return compact(win.label) || compact(win.target_name) || compact(win.id) || "未命名窗口";
+}
+
+function winColor(scope) {
+  return compact(scope) === "private" ? "var(--c-private)" : compact(scope) === "group" ? "var(--c-group)" : "var(--text-3)";
+}
+
+function winTone(scope) {
+  return compact(scope) === "private" ? "private" : compact(scope) === "group" ? "group" : "";
+}
+
+defineView("acl", {
+  title: "权限拓扑",
+  navLabel: "权限拓扑",
+  eyebrow: "Settings · ACL",
+  hint: "谁可以读到哪个窗口的记忆 —— 授权矩阵、单个窗口策略与全局范围开关",
+  async load() {
+    const result = await apiTry(() => apiGet("/acl/matrix"), null);
+    if (!result) return { error: "权限矩阵读取失败" };
+    return result;
+  },
+  render(data) {
+    if (data.error) return card("权限拓扑", "", emptyState("读取失败", data.error));
+
+    const windows = Array.isArray(data.windows) ? data.windows : [];
+    const rules = Array.isArray(data.rules) ? data.rules : [];
+    const policies = Array.isArray(data.policies) ? data.policies : [];
+    const scopeControl = data.scope_control || {};
+
+    const ruleMap = {};
+    rules.forEach((rule) => {
+      ruleMap[winKey(rule.owner_scope, rule.owner_id) + ">" + winKey(rule.reader_scope, rule.reader_id)] = rule;
+    });
+    const policyMap = {};
+    policies.forEach((policy) => {
+      policyMap[winKey(policy.window_scope, policy.window_id)] = policy;
+    });
+
+    const outDeg = {};
+    const inDeg = {};
+    rules.forEach((rule) => {
+      const owner = winKey(rule.owner_scope, rule.owner_id);
+      const reader = winKey(rule.reader_scope, rule.reader_id);
+      outDeg[owner] = (outDeg[owner] || 0) + 1;
+      inDeg[reader] = (inDeg[reader] || 0) + 1;
+    });
+
+    const query = aclState.query.trim().toLowerCase();
+    let candidates = windows.slice();
+    if (aclState.onlyLinked) {
+      candidates = candidates.filter(
+        (win) => (outDeg[winKey(win.scope, win.id)] || 0) + (inDeg[winKey(win.scope, win.id)] || 0) > 0
+      );
+    }
+    if (query) {
+      candidates = candidates.filter((win) => (winName(win) + " " + compact(win.id)).toLowerCase().indexOf(query) >= 0);
+    }
+    candidates.sort((a, b) => int(b.memory_count) - int(a.memory_count));
+
+    const cap = aclState.expanded ? ACL_MAX_EXPANDED : ACL_MAX_MATRIX;
+    const shown = candidates.slice(0, cap);
+
+    if (!shown.some((win) => winKey(win.scope, win.id) === aclState.selected)) {
+      const ranked = shown.slice().sort((a, b) => {
+        const ka = winKey(a.scope, a.id);
+        const kb = winKey(b.scope, b.id);
+        const diff = (outDeg[kb] || 0) + (inDeg[kb] || 0) - ((outDeg[ka] || 0) + (inDeg[ka] || 0));
+        return diff !== 0 ? diff : int(b.memory_count) - int(a.memory_count);
+      });
+      aclState.selected = ranked.length ? winKey(ranked[0].scope, ranked[0].id) : "";
+    }
+    const selKey = aclState.selected;
+    const selected = shown.find((win) => winKey(win.scope, win.id) === selKey) || null;
+
+    /* ---------- 矩阵 ---------- */
+    let matrix = "";
+    if (!shown.length) {
+      matrix = emptyState("没有可展示的窗口", "调整筛选条件，或先在记忆库里产生一些窗口。");
+    } else {
+      const cols = "grid-template-columns: 138px repeat(" + shown.length + ", 68px)";
+      const headRow =
+        '<div class="mx-corner">被读方 ＼ 读取方</div>' +
+        shown
+          .map(
+            (win, index) =>
+              '<div class="mx-ch" data-c="' + index + '"><b>' + esc(shortId(win.id)) + "</b><span>" +
+              esc(clip(winName(win), 8)) + "</span></div>"
+          )
+          .join("");
+      const bodyRows = shown
+        .map((owner, r) => {
+          const ownerKey = winKey(owner.scope, owner.id);
+          const rowHead =
+            '<button class="mx-rh' + (ownerKey === selKey ? " is-sel" : "") + '" type="button" data-r="' + r +
+            '" data-pick="' + esc(ownerKey) + '"><i style="background:' + winColor(owner.scope) + '"></i><b>' +
+            esc(winName(owner)) + "</b></button>";
+          const cells = shown
+            .map((reader, c) => {
+              if (r === c) return '<div class="mx-cell" data-state="self">自身</div>';
+              const rule = ruleMap[ownerKey + ">" + winKey(reader.scope, reader.id)];
+              const state = rule ? (rule.effect === "deny" ? "deny" : "allow") : "";
+              const glyph =
+                state === "allow"
+                  ? '<span class="dot"></span>'
+                  : state === "deny"
+                  ? '<span class="cross">×</span>'
+                  : "";
+              return (
+                '<button class="mx-cell" type="button" data-state="' + state + '" data-r="' + r + '" data-c="' + c + '"' +
+                ' data-owner-scope="' + esc(owner.scope) + '" data-owner-id="' + esc(owner.id) + '"' +
+                ' data-reader-scope="' + esc(reader.scope) + '" data-reader-id="' + esc(reader.id) + '"' +
+                (rule ? ' data-rule="' + esc(rule.id) + '"' : "") +
+                ' aria-label="' + esc(winName(owner) + " 授权给 " + winName(reader)) + '">' + glyph + "</button>"
+              );
+            })
+            .join("");
+          return rowHead + cells;
+        })
+        .join("");
+      matrix =
+        '<div class="mx-scroll"><div class="mx" id="mxGrid" style="' + cols + '">' + headRow + bodyRows + "</div>" +
+        '<div class="mx-tip" id="mxTip"></div></div>';
+    }
+
+    /* ---------- 授权密度 ---------- */
+    const density = candidates
+      .slice(0, 12)
+      .map((win) => {
+        const key = winKey(win.scope, win.id);
+        return (
+          '<button class="density-chip' + (key === selKey ? " is-sel" : "") + '" type="button" data-pick="' + esc(key) + '">' +
+          esc(winName(win)) + "<em>出 " + int(outDeg[key]) + " · 入 " + int(inDeg[key]) + "</em></button>"
+        );
+      })
+      .join("");
+
+    /* ---------- 选中窗口 ---------- */
+    let windowCard = "";
+    if (selected) {
+      const key = winKey(selected.scope, selected.id);
+      const policy = policyMap[key] || null;
+      const defaultMode = compact(selected.scope) === "group" ? "blacklist" : "whitelist";
+      const readMode = compact(policy && policy.read_mode) || defaultMode;
+      const shareMode = compact(policy && policy.share_mode) || defaultMode;
+      const captureOn = policy && policy.capture_enabled === false ? false : true;
+      const recallOn = policy && policy.recall_enabled === false ? false : true;
+
+      const outbound = rules.filter((rule) => winKey(rule.owner_scope, rule.owner_id) === key);
+      const inbound = rules.filter((rule) => winKey(rule.reader_scope, rule.reader_id) === key);
+
+      const ruleRow = (rule, direction) =>
+        '<div class="row" style="cursor:default"><div class="row-main">' +
+        '<div class="row-title">' + esc(shortId(direction === "out" ? rule.reader_id : rule.owner_id)) + "</div>" +
+        '<div class="row-sub">' + esc(SCOPE_META[compact(direction === "out" ? rule.reader_scope : rule.owner_scope)] ? SCOPE_META[compact(direction === "out" ? rule.reader_scope : rule.owner_scope)].label : compact(direction === "out" ? rule.reader_scope : rule.owner_scope)) + "</div></div>" +
+        '<div class="row-meta">' +
+        badge(rule.effect === "deny" ? "拒绝" : "允许", rule.effect === "deny" ? "danger" : "ok") +
+        (rule.enabled ? "" : badge("停用", "warn")) +
+        '<button class="btn is-sm is-ghost" type="button" data-del-acl="' + esc(rule.id) + '">删除</button>' +
+        "</div></div>";
+
+      const otherOptions = candidates
+        .filter((win) => winKey(win.scope, win.id) !== key)
+        .map(
+          (win) =>
+            '<option value="' + esc(winKey(win.scope, win.id)) + '">' + esc(winName(win)) + "（" +
+            esc(SCOPE_META[compact(win.scope)] ? SCOPE_META[compact(win.scope)].label : compact(win.scope)) + "）</option>"
+        )
+        .join("");
+
+      windowCard =
+        card(
+          "选中窗口",
+          policy ? "已单独设置策略" : "沿用范围默认",
+          '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">' +
+            '<span style="width:8px;height:8px;border-radius:99px;background:' + winColor(selected.scope) + ';flex:none"></span>' +
+            '<div style="min-width:0"><div style="font-size:14px;font-weight:620">' + esc(winName(selected)) + "</div>" +
+            '<div class="mono" style="font-size:11px;color:var(--text-3)">' + esc(compact(selected.id)) + " · " + fmtInt(selected.memory_count) + " 条记忆</div></div>" +
+            badge(SCOPE_META[compact(selected.scope)] ? SCOPE_META[compact(selected.scope)].label : compact(selected.scope), winTone(selected.scope)) +
+          "</div>" +
+          '<div class="section-label" style="margin:2px 0 8px"><h2 style="font-size:11px">出站授权</h2><span class="section-note">谁可以读这里的记忆 · ' + outbound.length + " 条</span></div>" +
+          (outbound.length
+            ? '<div class="row-list">' + outbound.map((rule) => ruleRow(rule, "out")).join("") + "</div>"
+            : '<p class="section-note" style="margin-bottom:10px">还没有把这里的记忆授权给任何窗口。</p>') +
+          '<div class="section-label" style="margin:14px 0 8px"><h2 style="font-size:11px">入站授权</h2><span class="section-note">这里能读到哪些记忆 · ' + inbound.length + " 条</span></div>" +
+          (inbound.length
+            ? '<div class="row-list">' + inbound.map((rule) => ruleRow(rule, "in")).join("") + "</div>"
+            : '<p class="section-note" style="margin-bottom:10px">这里还不能读到其他窗口的记忆。</p>') +
+          '<div class="section-label" style="margin:14px 0 8px"><h2 style="font-size:11px">快速授权</h2></div>' +
+          '<div style="display:grid;grid-template-columns:minmax(0,1fr) 96px auto;gap:7px;align-items:center">' +
+            '<select id="aclAddTarget" style="height:32px;padding:0 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px">' +
+            (otherOptions || '<option value="">没有其他窗口</option>') + "</select>" +
+            '<select id="aclAddEffect" style="height:32px;padding:0 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px">' +
+              '<option value="allow">允许</option><option value="deny">拒绝</option>' +
+            "</select>" +
+            '<button class="btn is-sm is-primary" type="button" id="aclAddBtn">添加</button>' +
+          "</div>" +
+          '<p class="section-note" style="margin-top:7px">等价于在矩阵里点这一格：从「本窗口」授权给所选窗口。</p>'
+        ) +
+        card(
+          "窗口策略",
+          policy ? "已单独设置" : "沿用范围默认（" + ACL_MODE_LABELS[defaultMode] + "）",
+          '<div class="config-form">' +
+            '<div class="field is-inline"><span>读取模式</span><select id="aclReadMode">' +
+              Object.keys(ACL_MODE_LABELS).map((key) => '<option value="' + key + '"' + (readMode === key ? " selected" : "") + ">" + ACL_MODE_LABELS[key] + "</option>").join("") +
+            "</select></div>" +
+            '<div class="field is-inline"><span>共享模式</span><select id="aclShareMode">' +
+              Object.keys(ACL_MODE_LABELS).map((key) => '<option value="' + key + '"' + (shareMode === key ? " selected" : "") + ">" + ACL_MODE_LABELS[key] + "</option>").join("") +
+            "</select></div>" +
+            '<label class="switch"><input type="checkbox" id="aclCapture"' + (captureOn ? " checked" : "") + ' /><span class="switch-track"></span><span>捕获新记忆</span></label>' +
+            '<label class="switch"><input type="checkbox" id="aclRecall"' + (recallOn ? " checked" : "") + ' /><span class="switch-track"></span><span>参与召回</span></label>' +
+            '<div class="pill-row" style="justify-content:flex-end">' +
+              '<button class="btn is-sm is-primary" type="button" id="aclPolicySave">保存策略</button>' +
+            "</div>" +
+          "</div>"
+        );
+    } else {
+      windowCard = card("选中窗口", "", emptyState("没有可选窗口", "先在左侧矩阵里选择一个窗口。")) +
+        card("窗口策略", "", emptyState("无策略", "选择窗口后可单独设置读写模式。"));
+    }
+
+    /* ---------- 范围开关 ---------- */
+    const scopeGrid =
+      '<div class="grid g3" style="gap:10px 14px">' +
+      SCOPE_SWITCHES.map(
+        (row) =>
+          '<label class="switch"><input type="checkbox" data-scope-control="' + row[0] + '"' +
+          (scopeControl[row[0]] ? " checked" : "") + ' /><span class="switch-track"></span><span>' + esc(row[1]) + "</span></label>"
+      ).join("") +
+      "</div>";
+
+    const denyCount = rules.filter((rule) => rule.effect === "deny").length;
+
+    return (
+      '<div class="grid" style="gap:14px">' +
+      '<div class="kpi-row">' +
+        kpi("参与拓扑的窗口", fmtInt(windows.length), "矩阵展示 " + fmtInt(shown.length) + " 个", "fact") +
+        kpi("授权规则", fmtInt(rules.length), "跨窗口读写授权", "gold") +
+        kpi("其中拒绝", fmtInt(denyCount), "显式禁止读取", denyCount ? "relation" : "fact") +
+        kpi("窗口策略", fmtInt(policies.length), "未设置走范围默认", "accent") +
+      "</div>" +
+      '<div class="grid split-2">' +
+        card(
+          "授权矩阵",
+          "行＝被读方 · 列＝读取方",
+          '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:11px">' +
+            '<div class="pill-row">' +
+              '<button class="pill' + (aclState.onlyLinked ? "" : " is-active") + '" type="button" data-acl-filter="all">全部窗口</button>' +
+              '<button class="pill' + (aclState.onlyLinked ? " is-active" : "") + '" type="button" data-acl-filter="linked">仅显示有规则</button>' +
+            "</div>" +
+            '<input id="aclQuery" type="search" placeholder="搜索窗口名或 ID" value="' + esc(aclState.query) +
+              '" style="flex:1;min-width:150px;height:30px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:12px;outline:none" />' +
+            (candidates.length > shown.length || aclState.expanded
+              ? '<button class="pill" type="button" data-acl-filter="expand">' +
+                (aclState.expanded ? "收起" : "显示全部 " + fmtInt(candidates.length) + " 个 ›") + "</button>"
+              : "") +
+          "</div>" +
+          matrix +
+          '<div class="pill-row" style="margin-top:11px;font-size:11px;color:var(--text-3)">' +
+            '<span class="badge" data-tone="ok">● 允许读取</span>' +
+            '<span class="badge" data-tone="danger">× 拒绝读取</span>' +
+            '<span class="badge">空 未显式授权</span>' +
+            '<span class="badge">自身 同窗口无需授权</span>' +
+          "</div>" +
+          '<p class="section-note" style="margin-top:9px">点击格子循环切换：未授权 → 允许 → 拒绝 → 未授权。灰色空格不代表禁止，由两侧窗口策略共同判定。</p>' +
+          (density
+            ? '<div class="section-label" style="margin:16px 0 8px"><h2 style="font-size:11px">窗口授权密度</h2><span class="section-note">出站 / 入站</span></div>' +
+              '<div class="density-wrap">' + density + "</div>"
+            : "")
+        ) +
+        '<div style="display:grid;gap:14px;align-content:start">' + windowCard + "</div>" +
+      "</div>" +
+      card(
+        "范围开关",
+        "关闭只停用对应能力，不删除已有记忆；参与拓扑关闭后，该范围的窗口不再出现在矩阵里",
+        scopeGrid,
+        '<button class="btn is-sm is-primary" type="button" id="aclScopeSave">保存范围开关</button>'
+      ) +
+      "</div>"
+    );
+  },
+  mount(node) {
+    const grid = $("#mxGrid", node);
+    const tip = $("#mxTip", node);
+
+    if (grid) {
+      const clearHot = () => {
+        $$(".is-hot", grid).forEach((item) => item.classList.remove("is-hot"));
+      };
+      grid.addEventListener("mouseover", (event) => {
+        const cell = event.target.closest(".mx-cell");
+        if (!cell || cell.dataset.state === "self") {
+          clearHot();
+          if (tip) tip.classList.remove("is-on");
+          return;
+        }
+        const r = cell.dataset.r;
+        const c = cell.dataset.c;
+        clearHot();
+        $$('.mx-cell[data-r="' + r + '"], .mx-cell[data-c="' + c + '"]', grid).forEach((item) =>
+          item.classList.add("is-hot")
+        );
+        const rowHead = $('.mx-rh[data-r="' + r + '"]', grid);
+        if (rowHead) rowHead.classList.add("is-hot");
+        const colHead = $('.mx-ch[data-c="' + c + '"]', grid);
+        if (colHead) colHead.classList.add("is-hot");
+        cell.classList.add("is-hot");
+        if (tip) {
+          const state = cell.dataset.state;
+          const now =
+            state === "allow"
+              ? "当前：允许读取"
+              : state === "deny"
+              ? "当前：拒绝读取"
+              : "当前：未显式授权（按双方策略判定）";
+          const next =
+            state === "allow" ? "点击改为「拒绝」" : state === "deny" ? "点击「清除规则」" : "点击授权「允许」";
+          tip.innerHTML =
+            '<div class="tip-title">' + esc(cell.getAttribute("aria-label") || "") + "</div>" +
+            '<div class="tip-now">' + esc(now) + "</div>" +
+            '<div class="tip-hint">' + esc(next) + "</div>";
+          tip.style.left = cell.offsetLeft + cell.offsetWidth / 2 + "px";
+          tip.style.top = cell.offsetTop + "px";
+          tip.classList.add("is-on");
+        }
+      });
+      grid.addEventListener("mouseleave", () => {
+        clearHot();
+        if (tip) tip.classList.remove("is-on");
+      });
+    }
+
+    const cycle = async (cell) => {
+      const payload = {
+        owner_scope: cell.dataset.ownerScope,
+        owner_id: cell.dataset.ownerId,
+        reader_scope: cell.dataset.readerScope,
+        reader_id: cell.dataset.readerId,
+      };
+      const state = cell.dataset.state;
+      const ruleId = compact(cell.dataset.rule);
+      if (state === "allow") {
+        await apiPost("/acl/upsert", Object.assign({ effect: "deny", enabled: true }, payload));
+        toast("已改为拒绝读取", "ok");
+      } else if (state === "deny") {
+        if (!ruleId) {
+          toast("找不到对应规则，请刷新后重试", "error");
+          return;
+        }
+        await apiPost("/acl/delete", { id: ruleId });
+        toast("已清除授权规则", "ok");
+      } else {
+        await apiPost("/acl/upsert", Object.assign({ effect: "allow", enabled: true }, payload));
+        toast("已授权读取", "ok");
+      }
+      invalidatePool();
+      go("acl");
+    };
+
+    $$(".mx-cell[data-owner-id]", node).forEach((cell) => {
+      cell.addEventListener("click", async () => {
+        await withBusy("正在更新授权…", () => cycle(cell));
+      });
+    });
+
+    $$("[data-pick]", node).forEach((button) => {
+      button.addEventListener("click", () => {
+        aclState.selected = button.dataset.pick;
+        go("acl");
+      });
+    });
+
+    $$("[data-acl-filter]", node).forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.dataset.aclFilter;
+        if (mode === "all") aclState.onlyLinked = false;
+        else if (mode === "linked") aclState.onlyLinked = true;
+        else if (mode === "expand") aclState.expanded = !aclState.expanded;
+        go("acl");
+      });
+    });
+
+    const queryInput = $("#aclQuery", node);
+    if (queryInput) {
+      const apply = () => {
+        aclState.query = queryInput.value.trim();
+        go("acl");
+      };
+      queryInput.addEventListener("change", apply);
+      queryInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") apply();
+      });
+    }
+
+    $$("[data-del-acl]", node).forEach((button) => {
+      button.addEventListener("click", async () => {
+        await withBusy("正在删除…", async () => {
+          await apiPost("/acl/delete", { id: button.dataset.delAcl });
+          invalidatePool();
+          toast("规则已删除", "ok");
+          go("acl");
+        });
+      });
+    });
+
+    const addBtn = $("#aclAddBtn", node);
+    if (addBtn) {
+      addBtn.addEventListener("click", async () => {
+        const target = $("#aclAddTarget", node).value;
+        const effect = $("#aclAddEffect", node).value;
+        const parts = target.split(":");
+        if (parts.length < 2) {
+          toast("请先选择目标窗口", "error");
+          return;
+        }
+        const current = compact(aclState.selected).split(":");
+        await withBusy("正在添加…", async () => {
+          await apiPost("/acl/upsert", {
+            owner_scope: current[0] || "",
+            owner_id: current.slice(1).join(":") || "",
+            reader_scope: parts[0] || "",
+            reader_id: parts.slice(1).join(":") || "",
+            effect,
+            enabled: true,
+          });
+          invalidatePool();
+          toast("授权已添加", "ok");
+          go("acl");
+        });
+      });
+    }
+
+    const policySave = $("#aclPolicySave", node);
+    if (policySave) {
+      policySave.addEventListener("click", async () => {
+        const current = compact(aclState.selected).split(":");
+        await withBusy("正在保存…", async () => {
+          await apiPost("/acl/policy", {
+            window_scope: current[0] || "",
+            window_id: current.slice(1).join(":") || "",
+            read_mode: $("#aclReadMode", node).value,
+            share_mode: $("#aclShareMode", node).value,
+            capture_enabled: $("#aclCapture", node).checked,
+            recall_enabled: $("#aclRecall", node).checked,
+          });
+          invalidatePool();
+          toast("窗口策略已保存", "ok");
+          go("acl");
+        });
+      });
+    }
+
+    const scopeSave = $("#aclScopeSave", node);
+    if (scopeSave) {
+      scopeSave.addEventListener("click", async () => {
+        const values = {};
+        SCOPE_SWITCHES.forEach((row) => {
+          const input = $('[data-scope-control="' + row[0] + '"]', node);
+          if (input) values[row[0]] = input.checked;
+        });
+        await withBusy("正在保存…", async () => {
+          await apiPost("/config/module/update", { module: "scope_control", values });
+          invalidatePool();
+          toast("范围开关已保存", "ok");
+          go("acl");
+        });
+      });
+    }
+  },
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+function bindShell() {
+  $("#themeToggle").addEventListener("click", () => {
+    applyTheme(state.theme === "dark" ? "light" : "dark");
+  });
+
+  $("#drawerClose").addEventListener("click", closeDrawer);
+  $("#scrim").addEventListener("click", closeDrawer);
+  $("#assemblyViewerClose")?.addEventListener("click", closeAssemblyViewer);
+  $("#assemblyViewerRetry")?.addEventListener("click", () => {
+    const id = $("#assemblyViewerFile")?.textContent.replace(/^FILE\s+|\s+\/.*$/g, "").trim();
+    if (id) openAssemblyViewer(id);
+  });
+  $("#assemblyExplode")?.addEventListener("click", () => state.assemblyViewer?.setExploded(true));
+  $("#assemblyAssemble")?.addEventListener("click", () => state.assemblyViewer?.setExploded(false));
+  $("#assemblyReset")?.addEventListener("click", () => state.assemblyViewer?.reset());
+
+  $("#refreshBtn").addEventListener("click", () => {
+    invalidatePool();
+    refresh();
+  });
+
+  const modeToggle = $("#modeToggle");
+  if (modeToggle) {
+    modeToggle.addEventListener("click", () => {
+      applyMode(state.mode === "cinema" ? "standard" : "cinema");
+      toast(state.mode === "cinema" ? "已进入终端模式" : "已切回标准模式", "ok");
+      go(state.mode === "cinema" ? "overview" : state.view);
+    });
+  }
+
+  const search = $("#globalSearch");
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const value = search.value.trim();
+    if (!value) return;
+    state.filters = { scope: "", q: value, visibility: "", lifecycle: "", memoryType: "", target: "" };
+    go("inspect");
+  });
+
+  $("#railNav").addEventListener("click", (event) => {
+    const item = event.target.closest("[data-view]");
+    if (!item) return;
+    go(item.dataset.view);
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-goto]");
+    if (!target) return;
+    const view = target.dataset.goto;
+    const filter = compact(target.dataset.filter);
+    const options = {};
+    if (compact(target.dataset.scope)) options.scope = target.dataset.scope;
+    if (compact(target.dataset.target)) options.target = target.dataset.target;
+    const ownerBot = compact(target.dataset.ownerBot);
+    if (ownerBot) {
+      state.filters = { scope: "", q: "", visibility: "", lifecycle: "", memoryType: "", target: "", ownerBot: ownerBot };
+    } else if (filter === "all") {
+      state.filters = { scope: "", q: "", visibility: "", lifecycle: "", memoryType: "", target: "" };
+    } else if (filter) {
+      if (filter.indexOf("scope:") === 0) {
+        state.filters = { scope: filter.slice(6), q: "", visibility: "", lifecycle: "", memoryType: "", target: "" };
+      } else if (filter === "profile") {
+        state.filters = { scope: "profile", q: "", visibility: "", lifecycle: "", memoryType: "", target: "" };
+      } else if (filter.indexOf("external:") === 0) {
+        state.filters = { scope: "", q: "", visibility: "", lifecycle: "", memoryType: "", target: "" };
+      } else if (filter.indexOf("tab:") === 0) {
+        quarantineTab = filter.slice(4) === "pending" ? "pending" : "quarantined";
+        quarantineOffset = 0;
+      }
+    }
+    go(view, options);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("#assemblyViewer")?.hidden) {
+      event.preventDefault();
+      closeAssemblyViewer();
+      return;
+    }
+    if (state.mode === "cinema" && state.view === "overview") {
+      const searchBox = $("#terminalSearch");
+      if (event.key === "/" && document.activeElement !== searchBox) {
+        event.preventDefault();
+        searchBox && searchBox.focus();
+        return;
+      }
+      const prevColumn = $("[data-terminal-column-prev]");
+      const nextColumn = $("[data-terminal-column-next]");
+      const prevRecord = $("[data-terminal-prev]");
+      const nextRecord = $("[data-terminal-next]");
+      const records = $$("#terminalFeed .terminal-record:not([hidden])");
+      if (event.key === "ArrowLeft" && prevColumn) {
+        event.preventDefault();
+        prevColumn.click();
+        return;
+      }
+      if (event.key === "ArrowRight" && nextColumn) {
+        event.preventDefault();
+        nextColumn.click();
+        return;
+      }
+      if (event.key === "ArrowUp" && prevRecord) {
+        event.preventDefault();
+        prevRecord.click();
+        return;
+      }
+      if (event.key === "ArrowDown" && nextRecord) {
+        event.preventDefault();
+        nextRecord.click();
+        return;
+      }
+      if (event.key === "Enter" && document.activeElement?.classList.contains("terminal-record")) {
+        event.preventDefault();
+        document.activeElement.click();
+        return;
+      }
+    }
+    if (event.key === "Escape") {
+      closeDrawer();
+      const box = $(".lightbox");
+      if (box) box.remove();
+    }
+  });
+}
+
+async function boot() {
+  bindShell();
+  applyTheme(state.theme, { persist: false });
+  applyMode(state.mode);
+  renderRail();
+  setRailStatus("loading", "正在连接…");
+
+  const initial = document.documentElement.dataset.initialNav;
+  const target = state.mode === "cinema" ? "overview" : (initial && VIEWS[initial] ? initial : "overview");
+
+  try {
+    await apiGet("/stats");
+    setRailStatus("ok", "已连接");
+    // 2.6.6：浏览器存储被清过也能恢复上次的深色/浅色选择
+    const prefs = await apiGet("/ui-preferences").catch(() => null);
+    if (prefs && typeof prefs.dark_mode === "boolean") {
+      const want = prefs.dark_mode ? "dark" : "light";
+      if (want !== state.theme) applyTheme(want, { persist: false });
+    }
+  } catch (error) {
+    setRailStatus("bad", "连接失败");
+  }
+
+  state.ready = true;
+  await go(target);
+  // 配色放最后：不阻塞首屏，失败也不影响面板可用
+  syncPalette();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}

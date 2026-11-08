@@ -1,0 +1,5 @@
+# 宿主 SDK 由正在运行的 AstrBot 提供；不要在插件依赖中安装 astrbot。
+# 桌面版宿主可能没有 pip dist-info，声明 astrbot 会另装一份并覆盖宿主导入。
+# 宿主版本要求由 metadata.yaml 的 astrbot_version 校验，开发 SDK 见 requirements-dev.txt。
+# numpy / jsonschema 是惰性可选件（core/vector_search.py、core/query_notes.py 缺失时会降级），
+# 不作为硬依赖；面板前端由宿主同源提供，没有额外运行期依赖。
