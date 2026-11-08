@@ -1,3 +1,7 @@
+> 微信维护仓库：RitsuYi/astrbot_plugin_memory_companion，唯一分支 `weixin`。
+> 当前版本 `2.6.5+weixin.2.2`；升级流程见 [维护方案](MAINTENANCE.md)，来源见 [基线记录](UPSTREAM_BASELINE.json)。
+> 原作者为 menglimi，原始说明和署名保留。
+
 # 我会牢牢记住你
 
 > **第三方个人微信实验适配版 `2.6.5+weixin.2.2`**，基于上游 `f16d643`，不是作者正式发布。

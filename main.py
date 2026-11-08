@@ -75,7 +75,7 @@ def _normalize_query_parameters(raw: Any) -> dict[str, Any] | None:
     "menglimi",
     "我会牢牢记住你：结构化长期记忆、共同自我时间线和关系隔离。",
     PLUGIN_VERSION,
-    "https://github.com/menglimi/astrbot_plugin_memory_companion",
+    "https://github.com/RitsuYi/astrbot_plugin_memory_companion",
 )
 class MemoryCompanionPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any]):
