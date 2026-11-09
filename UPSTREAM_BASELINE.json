@@ -9,7 +9,17 @@
   "source_snapshot_commit": "f98e583ccc5e63d7c41d5e4dd4f6774a21decbb3",
   "merge_strategy": "git-merge-with-shared-upstream-baseline",
   "automatic_upstream_merge": false,
-  "real_wechat_verification": "requires user environment",
+  "real_wechat_verification": "未实测；SDK/模拟测试不能代替真实微信登录、收发与双插件联调。",
   "upstream_history_bridge_commit": "debfdfe3cb8d7ac61eb1b7faf06215a87a2560ae",
-  "upstream_git_history_connected": true
+  "upstream_git_history_connected": true,
+  "handoff": {
+    "archive": "wechat-r2-repository-ready-to-push.zip",
+    "archive_sha256": "2af88276ec2076cde640047e78d741a12a97c4dded65f5b2b09f69e0ab85f4ae",
+    "bundle": "astrbot_plugin_memory_companion-weixin-ready.bundle",
+    "bundle_sha256": "86a8e0fc411ddeeb79874f50de65f67c1e6bf9e8ede17d695d3d59d98a3646ae",
+    "prepared_head": "cb060847b131022c47d1b7f8051affcf118ef3c7",
+    "original_origin_commit": "7e73b272df6f64e085b79d55944b962444112cae",
+    "verified_on": "2026-11-09"
+  },
+  "source_archive_verification": "SHA256 recorded from the verified handoff manifest; original plugin ZIP is not present locally."
 }

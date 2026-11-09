@@ -5,11 +5,13 @@
   "tested_host": "AstrBot 4.29.4",
   "real_wechat_login_tested": false,
   "sha256": {
+    ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
+    "AGENTS.md": "0473fb47404ffafab7a9d444feaa370a1429cfb92dbe18cc30e94ea360a7a4ee",
     "CHANGELOG.md": "9991c1fa2f3dfc9d44901517547338037234c54f99a7b5b2119f637288a29878",
-    "MAINTENANCE.md": "9fd618578ab47975a3ee609139e169a260ff4da553fd47e4d536a87e76f880ae",
-    "README.md": "048c5c14d677d5e9764cb4d9ec3bf4e73780b22c5a5f712613698146e2d420c1",
+    "MAINTENANCE.md": "60a6825fc16a68629106e1aac9de06c1fbec62dabf3841ed19a521b73f3912d2",
+    "README.md": "283cf90ee33e611d3b498a30aeb4991afa6322e6ea0b3123ccc17e16af302cfa",
     "UPGRADE-1.9.0-完整升级说明.md": "d9f2cf2ac5d1ddce4c7ed01e49799b2135d753d5efe037ca4c265343e49944b7",
-    "UPSTREAM_BASELINE.json": "d9f7a3acd9544d4cd54cc6930638991ef8b955c9cce180cc31f62c73d3920f6f",
+    "UPSTREAM_BASELINE.json": "f85be8cda3aa7668f03d7763770dad6b36ed4905bce285d453e39d7d175f05d5",
     "__init__.py": "1a9ca9dd61ff55e8bd16e58eb7ab743e418ed7188613b279ed83210cab7b93aa",
     "_conf_schema.json": "aeeee62b6acab4f1566e5da1d46ef8844fbb134516a483f45d23f7fbea4064fb",
     "companion_page_bridge.py": "2b28b22d4ec47dd640e183a664c21ed8189daf6c5f226c968dabd39b3b0ef366",
@@ -175,7 +177,7 @@
     "pages/记忆面板/people.html": "b97e70aca48220fb7b03e1d24d15373f65dda454753206fc33a63c7c77079930",
     "pages/记忆面板/people.js": "09455e1f91e6aae57f4bbd9dc45d54d693ba3232525d8b42d3f6dadd7c613424",
     "pyproject.toml": "c4595977a9dba6d1f7d68fab3934790822d1a1ce715d5b7a5d4e573c8bca6055",
-    "requirements.txt": "dd82e84ad58d6836d27af2f0a1c4bb8cc8dacb7f72d2f4df2354bf4f4e44249a",
+    "requirements.txt": "62008466c797c12f858f3d83d364385b501041e238b02c7fa857bf88af570a7d",
     "unified_profile_contract.py": "aca1475dbe471f3050cd862317a4b461ef61089b78149967987374d453d205e6"
   }
 }
